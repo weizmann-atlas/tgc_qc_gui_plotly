@@ -21,18 +21,18 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.resize(1000, 800)
 
         self.pp_channel_mapping = {
-            'PP0A': {'layer': 0, 'type': 'wire',  'channels': '0–15'},
-            'PP1A': {'layer': 0, 'type': 'wire',  'channels': '16–31'},
-            'PP2A': {'layer': 2, 'type': 'wire',  'channels': '0–15'},
-            'PP3A': {'layer': 2, 'type': 'wire',  'channels': '16–31'},
-            'PP4A': {'layer': 0, 'type': 'strip', 'channels': '0–15'},
-            'PP5A': {'layer': 0, 'type': 'strip', 'channels': '16–31'},
-            'PP0B': {'layer': 1, 'type': 'wire',  'channels': '0–15'},
-            'PP1B': {'layer': 1, 'type': 'wire',  'channels': '16–31'},
-            'PP4B': {'layer': 1, 'type': 'strip', 'channels': '0–15'},
-            'PP5B': {'layer': 1, 'type': 'strip', 'channels': '16–31'},
-            'PP6A': {'layer': 2, 'type': 'strip', 'channels': '0–15'},
-            'PP7A': {'layer': 2, 'type': 'strip', 'channels': '16–31'}
+            'PP1A': {'layer': 0, 'type': 'wire',  'channels': '0–15'},
+            'PP2A': {'layer': 0, 'type': 'wire',  'channels': '16–31'},
+            'PP3A': {'layer': 2, 'type': 'wire',  'channels': '0–15'},
+            'PP4A': {'layer': 2, 'type': 'wire',  'channels': '16–31'},
+            'PP5A': {'layer': 0, 'type': 'strip', 'channels': '0–15'},
+            'PP6A': {'layer': 0, 'type': 'strip', 'channels': '16–31'},
+            'PP1B': {'layer': 1, 'type': 'wire',  'channels': '0–15'},
+            'PP2B': {'layer': 1, 'type': 'wire',  'channels': '16–31'},
+            'PP5B': {'layer': 1, 'type': 'strip', 'channels': '0–15'},
+            'PP6B': {'layer': 1, 'type': 'strip', 'channels': '16–31'},
+            'PP7A': {'layer': 2, 'type': 'strip', 'channels': '0–15'},
+            'PP8A': {'layer': 2, 'type': 'strip', 'channels': '16–31'}
         }
 
         self.layout = QVBoxLayout()
@@ -138,18 +138,47 @@ class TGC_QC_GUI_Plotly(QWidget):
         """
         data = {}
         current_pp = None
+        incomplete_pps = []
+        
         for line in lines:
             line = line.strip()
+            
+            # Skip empty lines, header, and footer lines
+            if (not line or 
+                line.startswith("data checked") or 
+                re.match(r"^\d+$", line) or  # Footer number (e.g., "118")
+                re.match(r"^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) ", line)):  # Date footer
+                continue
+            
             if line.startswith("----PP"):
-                current_pp = line.strip('-')
-                data[current_pp] = []
+                # Extract PP name using regex (e.g., "PP1" from "----PP1----")
+                match = re.search(r"PP\d+", line)
+                if match:
+                    current_pp = match.group(0)
+                    data[current_pp] = []
             elif current_pp and re.match(r"^[0-9.eE+\-]+\s*:\s*[0-9.eE+\-]+\s*:\s*[0-9.eE+\-]+", line):
                 try:
+                    # Split by colon and strip whitespace from each part
                     parts = [float(x.strip()) for x in line.split(":")]
                     if len(parts) == 3:
-                        data[current_pp].append(parts)
-                except ValueError:
+                        # Check for NaN or inf values
+                        if not any(np.isnan(parts)) and not any(np.isinf(parts)):
+                            data[current_pp].append(parts)
+                except (ValueError, IndexError):
                     continue
+        
+        # Validate PP block completeness
+        for pp, values in data.items():
+            if len(values) != 32:
+                incomplete_pps.append(f"{pp} ({len(values)}/32 channels)")
+        
+        if incomplete_pps:
+            QMessageBox.warning(
+                self, "Incomplete Data",
+                f"Some PP blocks have incomplete data:\n" + "\n".join(incomplete_pps[:10]) +
+                (f"\n... and {len(incomplete_pps) - 10} more" if len(incomplete_pps) > 10 else "")
+            )
+        
         return data
 
     def plot_cosmic_root(self, file_path):
