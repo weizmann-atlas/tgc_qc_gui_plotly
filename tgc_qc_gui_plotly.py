@@ -42,10 +42,14 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.mode_selector = QComboBox()
         self.mode_selector.addItems(["Noise", "Cosmic", "Threshold Scan", "Hit Rate (TODO)"])
         self.load_button = QPushButton("Load .txt File")
+        self.log_scale_button = QPushButton("Log Scale: OFF")
+        self.log_scale_button.setCheckable(True)
         self.switch_tab_button = QPushButton("Main Plot")
         self.show_mapping_button = QPushButton("Show Mapping")
         self.update_load_button_label()
+        self.update_log_scale_button_label()
         self.mode_selector.currentIndexChanged.connect(self.update_load_button_label)
+        self.log_scale_button.toggled.connect(self.update_log_scale_button_label)
 
         self.load_button.clicked.connect(self.load_file)
         self.switch_tab_button.clicked.connect(self.switch_plot_tab)
@@ -54,6 +58,7 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.layout.addWidget(self.label)
         self.layout.addWidget(self.mode_selector)
         self.layout.addWidget(self.load_button)
+        self.layout.addWidget(self.log_scale_button)
         self.layout.addWidget(self.show_mapping_button)
         self.layout.addWidget(self.switch_tab_button)
 
@@ -88,6 +93,15 @@ class TGC_QC_GUI_Plotly(QWidget):
             self.load_button.setText("Load Noise File")
         else:
             self.load_button.setText("Load File")
+
+    def update_log_scale_button_label(self, checked=None):
+        """Update the log scale toggle button label."""
+        if checked is None:
+            checked = self.log_scale_button.isChecked()
+        if checked:
+            self.log_scale_button.setText("Log Scale: ON")
+        else:
+            self.log_scale_button.setText("Log Scale: OFF")
 
     def load_file(self):
         """Load and process files based on the selected mode."""
@@ -284,17 +298,32 @@ class TGC_QC_GUI_Plotly(QWidget):
             return
 
         hitmap = np.array(heatmap_data).T
+        use_log_scale = self.log_scale_button.isChecked()
+        z_data = hitmap
+        z_title = "val1"
+
+        if use_log_scale:
+            positive_mask = hitmap > 0
+            if not np.any(positive_mask):
+                QMessageBox.warning(self, "Warning", "Log scale requires at least one positive value.")
+                return
+            min_positive = float(np.min(hitmap[positive_mask]))
+            # Plotly heatmap colorbars do not support native log scaling.
+            # Transform z explicitly and clamp non-positive values to the lowest positive entry.
+            z_data = np.log10(np.where(positive_mask, hitmap, min_positive))
+            z_title = "log10(val1)"
 
         fig = go.Figure(data=go.Heatmap(
-            z=hitmap,
+            z=z_data,
             x=valid_tags,
             y=list(range(16)),
             colorscale='Viridis',
-            colorbar=dict(title='val1')
+            colorbar=dict(title=z_title)
         ))
 
+        title_suffix = " (log z)" if use_log_scale else ""
         fig.update_layout(
-            title="Noise Rate per Channel per PP Half (val1)",
+            title=f"Noise Rate per Channel per PP Half (val1){title_suffix}",
             xaxis_title="PP Half",
             yaxis_title="Channel (0–15)",
             margin=dict(t=50, b=50)
@@ -382,13 +411,20 @@ class TGC_QC_GUI_Plotly(QWidget):
             rows=2, cols=2,
             subplot_titles=("Global", "L1", "L2", "L3")
         )
+        use_log_scale = self.log_scale_button.isChecked()
+        hidden_points_for_log = 0
 
         for name, series in global_data.items():
             means, stds = zip(*series)
+            if use_log_scale:
+                means_plot = [mean if mean > 0 else np.nan for mean in means]
+                hidden_points_for_log += sum(mean <= 0 for mean in means)
+            else:
+                means_plot = means
             fig.add_trace(
                 go.Scatter(
                     x=thresholds,
-                    y=means,
+                    y=means_plot,
                     name=f"{name} (global)",
                     error_y=dict(type='data', array=stds, visible=True)
                 ),
@@ -398,21 +434,27 @@ class TGC_QC_GUI_Plotly(QWidget):
         for lyr in range(3):
             for typ in ['strip', 'wire']:
                 means, stds = zip(*layer_data[lyr][typ])
+                if use_log_scale:
+                    means_plot = [mean if mean > 0 else np.nan for mean in means]
+                    hidden_points_for_log += sum(mean <= 0 for mean in means)
+                else:
+                    means_plot = means
                 # Map layers to subplot positions: L1->(1,2), L2->(2,1), L3->(2,2)
                 row = 1 + (lyr + 1) // 2
                 col = 1 + (lyr + 1) % 2
                 fig.add_trace(
                     go.Scatter(
                         x=thresholds,
-                        y=means,
+                        y=means_plot,
                         name=f"{typ} (L{lyr+1})",
                         error_y=dict(type='data', array=stds, visible=True)
                     ),
                     row=row, col=col
                 )
 
+        y_axis_suffix = " [log]" if use_log_scale else ""
         fig.update_layout(
-            title="Threshold Scan: Avg Occupancy vs Threshold",
+            title=f"Threshold Scan: Avg Occupancy vs Threshold{y_axis_suffix}",
             height=800,
             margin=dict(t=50, b=50),
             showlegend=True
@@ -423,6 +465,15 @@ class TGC_QC_GUI_Plotly(QWidget):
             for col in [1, 2]:
                 fig.update_xaxes(title_text="Threshold (mV)", row=row, col=col)
                 fig.update_yaxes(title_text="Average Occupancy", row=row, col=col)
+                if use_log_scale:
+                    fig.update_yaxes(type='log', row=row, col=col)
+
+        if use_log_scale and hidden_points_for_log:
+            QMessageBox.information(
+                self,
+                "Log Scale Note",
+                f"{hidden_points_for_log} non-positive points were hidden in log-scale threshold plots."
+            )
 
         html = pio.to_html(fig, full_html=True, include_plotlyjs='cdn')
         tab = QWebEngineView()
