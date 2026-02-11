@@ -132,9 +132,9 @@ class TGC_QC_GUI_Plotly(QWidget):
 
     def parse_pp_blocks(self, lines):
         """Parse PP blocks from text file lines.
-        
-        Returns:
-            dict: Dictionary mapping PP names to lists of [val1, val2, val3] tuples.
+
+        Supports both legacy files (`PPn` blocks with 32 channels) and
+        newer files (`PPnA`/`PPnB` blocks with 16 channels each).
         """
         data = {}
         current_pp = None
@@ -151,26 +151,30 @@ class TGC_QC_GUI_Plotly(QWidget):
                 continue
             
             if line.startswith("----PP"):
-                # Extract PP name using regex (e.g., "PP1" from "----PP1----")
-                match = re.search(r"PP\d+", line)
+                # Keep half tags when present (e.g. PP1A, PP1B).
+                match = re.search(r"PP\d+[A-Z]?", line)
                 if match:
                     current_pp = match.group(0)
                     data[current_pp] = []
-            elif current_pp and re.match(r"^[0-9.eE+\-]+\s*:\s*[0-9.eE+\-]+\s*:\s*[0-9.eE+\-]+", line):
+            elif current_pp:
+                match = re.match(
+                    r"^([0-9.eE+\-]+)\s*:\s*([0-9.eE+\-]+)\s*:\s*([0-9.eE+\-]+)\s*$",
+                    line
+                )
+                if not match:
+                    continue
                 try:
-                    # Split by colon and strip whitespace from each part
-                    parts = [float(x.strip()) for x in line.split(":")]
-                    if len(parts) == 3:
-                        # Check for NaN or inf values
-                        if not any(np.isnan(parts)) and not any(np.isinf(parts)):
-                            data[current_pp].append(parts)
+                    parts = [float(match.group(i)) for i in range(1, 4)]
+                    if not any(np.isnan(parts)) and not any(np.isinf(parts)):
+                        data[current_pp].append(parts)
                 except (ValueError, IndexError):
                     continue
         
         # Validate PP block completeness
         for pp, values in data.items():
-            if len(values) != 32:
-                incomplete_pps.append(f"{pp} ({len(values)}/32 channels)")
+            expected_channels = 16 if re.fullmatch(r"PP\d+[A-Z]", pp) else 32
+            if len(values) != expected_channels:
+                incomplete_pps.append(f"{pp} ({len(values)}/{expected_channels} channels)")
         
         if incomplete_pps:
             QMessageBox.warning(
@@ -180,6 +184,24 @@ class TGC_QC_GUI_Plotly(QWidget):
             )
         
         return data
+
+    def iter_pp_half_blocks(self, data):
+        """Yield `(tag, 16-channel values)` for all PP halves in parsed data."""
+        for pp in sorted(data.keys()):
+            values = data[pp]
+
+            # New format: PPnA / PPnB already split in 16-channel blocks.
+            if re.fullmatch(r"PP\d+[A-Z]", pp):
+                if pp in self.pp_channel_mapping and len(values) >= 16:
+                    yield pp, values[:16]
+                continue
+
+            # Legacy format: PPn with 32 channels, split into A/B halves.
+            if re.fullmatch(r"PP\d+", pp) and len(values) >= 32:
+                for half, offset in (("A", 0), ("B", 16)):
+                    tag = f"{pp}{half}"
+                    if tag in self.pp_channel_mapping:
+                        yield tag, values[offset:offset + 16]
 
     def plot_cosmic_root(self, file_path):
         """Plot cosmic ray occupancy from a ROOT file."""
@@ -247,25 +269,15 @@ class TGC_QC_GUI_Plotly(QWidget):
     def plot_noise_file(self, lines):
         """Plot noise data from parsed text file lines."""
         data = self.parse_pp_blocks(lines)
-        pp_names = sorted(data.keys())
-
         valid_tags = []
         heatmap_data = []
 
-        for pp in pp_names:
-            values = data[pp]
-            if len(values) != 32:
+        for tag, values in self.iter_pp_half_blocks(data):
+            row = [channel_vals[0] for channel_vals in values]
+            if len(row) != 16:
                 continue
-            for half, offset in zip(["A", "B"], [0, 16]):
-                tag = f"{pp}{half}"
-                if tag not in self.pp_channel_mapping:
-                    continue
-                try:
-                    row = [values[ch + offset][0] for ch in range(16)]
-                except IndexError:
-                    continue
-                heatmap_data.append(row)
-                valid_tags.append(tag)
+            heatmap_data.append(row)
+            valid_tags.append(tag)
 
         if not heatmap_data:
             QMessageBox.warning(self, "Warning", "No valid data found in file.")
@@ -327,24 +339,14 @@ class TGC_QC_GUI_Plotly(QWidget):
                 2: {'strip': [], 'wire': []}
             }
 
-            for pp in data:
-                values = data[pp]
-                if len(values) != 32:
-                    continue
-                for half, offset in zip(["A", "B"], [0, 16]):
-                    tag = f"{pp}{half}"
-                    if tag not in self.pp_channel_mapping:
-                        continue
-                    info = self.pp_channel_mapping[tag]
-                    try:
-                        occs = [values[ch + offset][0] for ch in range(16)]
-                        layer_vals[info['layer']][info['type']].extend(occs)
-                        if info['type'] == 'strip':
-                            strip_vals.extend(occs)
-                        else:
-                            wire_vals.extend(occs)
-                    except IndexError:
-                        continue
+            for tag, values in self.iter_pp_half_blocks(data):
+                info = self.pp_channel_mapping[tag]
+                occs = [channel_vals[0] for channel_vals in values]
+                layer_vals[info['layer']][info['type']].extend(occs)
+                if info['type'] == 'strip':
+                    strip_vals.extend(occs)
+                else:
+                    wire_vals.extend(occs)
 
             if not strip_vals or not wire_vals:
                 continue
