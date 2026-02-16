@@ -1,12 +1,14 @@
 import sys
 import re
+import os
 import numpy as np
 
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QPushButton,
     QFileDialog, QLabel, QTabWidget, QComboBox, QMessageBox
 )
-from PyQt5.QtWebEngineWidgets import QWebEngineView
+from PyQt5.QtCore import QStandardPaths
+from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEngineProfile
 import plotly.graph_objects as go
 import plotly.io as pio
 from plotly.subplots import make_subplots
@@ -19,6 +21,8 @@ class TGC_QC_GUI_Plotly(QWidget):
         super().__init__()
         self.setWindowTitle("TGC Noise and Cosmic Viewer - Plotly")
         self.resize(1000, 800)
+        self.web_profile = QWebEngineProfile.defaultProfile()
+        self.web_profile.downloadRequested.connect(self.handle_download_requested)
 
         self.pp_channel_mapping = {
             'PP1A': {'layer': 0, 'type': 'wire',  'channels': '0–15'},
@@ -66,6 +70,28 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self.tabs.removeTab)
         self.layout.addWidget(self.tabs)
+
+    def handle_download_requested(self, download_item):
+        """Handle downloads triggered from embedded Plotly controls."""
+        suggested_name = download_item.downloadFileName() or "plot.png"
+        download_dir = (
+            QStandardPaths.writableLocation(QStandardPaths.DownloadLocation)
+            or os.path.expanduser("~/Downloads")
+        )
+        default_path = os.path.join(download_dir, suggested_name)
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Plot As PNG",
+            default_path,
+            "PNG Files (*.png);;All Files (*)"
+        )
+        if not save_path:
+            download_item.cancel()
+            return
+
+        download_item.setPath(save_path)
+        download_item.accept()
+        self.label.setText(f"Saving: {save_path}")
 
     def show_mapping_dialog(self):
         """Display the PP channel mapping information in a dialog."""
