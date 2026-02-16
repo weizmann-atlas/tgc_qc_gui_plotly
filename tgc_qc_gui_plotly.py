@@ -4,10 +4,11 @@ import os
 import numpy as np
 
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QPushButton,
-    QFileDialog, QLabel, QTabWidget, QComboBox, QMessageBox
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
+    QFileDialog, QLabel, QTabWidget, QComboBox, QMessageBox,
+    QDialog, QListWidget, QListWidgetItem, QDialogButtonBox
 )
-from PyQt5.QtCore import QStandardPaths
+from PyQt5.QtCore import Qt, QStandardPaths
 from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEngineProfile
 import plotly.graph_objects as go
 import plotly.io as pio
@@ -33,11 +34,17 @@ class TGC_QC_GUI_Plotly(QWidget):
             'PP6A': {'layer': 0, 'type': 'strip', 'channels': '16–31'},
             'PP1B': {'layer': 1, 'type': 'wire',  'channels': '0–15'},
             'PP2B': {'layer': 1, 'type': 'wire',  'channels': '16–31'},
+            'PP3B': {'layer': 2, 'type': 'wire',  'channels': '0–15'},
+            'PP4B': {'layer': 2, 'type': 'wire',  'channels': '16–31'},
             'PP5B': {'layer': 1, 'type': 'strip', 'channels': '0–15'},
             'PP6B': {'layer': 1, 'type': 'strip', 'channels': '16–31'},
             'PP7A': {'layer': 2, 'type': 'strip', 'channels': '0–15'},
-            'PP8A': {'layer': 2, 'type': 'strip', 'channels': '16–31'}
+            'PP7B': {'layer': 2, 'type': 'strip', 'channels': '0–15'},
+            'PP8A': {'layer': 2, 'type': 'strip', 'channels': '16–31'},
+            'PP8B': {'layer': 2, 'type': 'strip', 'channels': '16–31'}
         }
+        self.available_asd_cards = self.sorted_asd_cards(self.pp_channel_mapping.keys())
+        self.selected_asd_cards = set(self.available_asd_cards)
 
         self.layout = QVBoxLayout()
         self.setLayout(self.layout)
@@ -48,12 +55,16 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.load_button = QPushButton("Load .txt File")
         self.log_scale_button = QPushButton("Log Scale: OFF")
         self.log_scale_button.setCheckable(True)
+        self.select_asd_button = QPushButton("Select ASD Cards (Threshold Scan)")
+        self.asd_selection_label = QLabel("")
         self.switch_tab_button = QPushButton("Main Plot")
         self.show_mapping_button = QPushButton("Show Mapping")
         self.update_load_button_label()
         self.update_log_scale_button_label()
+        self.update_asd_selection_label()
         self.mode_selector.currentIndexChanged.connect(self.update_load_button_label)
         self.log_scale_button.toggled.connect(self.update_log_scale_button_label)
+        self.select_asd_button.clicked.connect(self.show_asd_selection_dialog)
 
         self.load_button.clicked.connect(self.load_file)
         self.switch_tab_button.clicked.connect(self.switch_plot_tab)
@@ -63,6 +74,8 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.layout.addWidget(self.mode_selector)
         self.layout.addWidget(self.load_button)
         self.layout.addWidget(self.log_scale_button)
+        self.layout.addWidget(self.select_asd_button)
+        self.layout.addWidget(self.asd_selection_label)
         self.layout.addWidget(self.show_mapping_button)
         self.layout.addWidget(self.switch_tab_button)
 
@@ -128,6 +141,83 @@ class TGC_QC_GUI_Plotly(QWidget):
             self.log_scale_button.setText("Log Scale: ON")
         else:
             self.log_scale_button.setText("Log Scale: OFF")
+
+    def sorted_asd_cards(self, cards):
+        """Return ASD card tags sorted as PP1A, PP1B, PP2A, ..."""
+        def sort_key(tag):
+            match = re.fullmatch(r"PP(\d+)([A-Z])", tag)
+            if match:
+                return int(match.group(1)), match.group(2)
+            return float("inf"), tag
+        return sorted(cards, key=sort_key)
+
+    def update_asd_selection_label(self):
+        """Update the summary label for selected ASD cards."""
+        total = len(self.available_asd_cards)
+        selected = self.sorted_asd_cards(self.selected_asd_cards)
+        selected_count = len(selected)
+
+        if selected_count == 0:
+            summary = "ASD cards: none selected"
+        elif selected_count == total:
+            summary = f"ASD cards: all ({total})"
+        elif selected_count <= 6:
+            summary = "ASD cards: " + ", ".join(selected)
+        else:
+            summary = f"ASD cards: {selected_count}/{total} selected"
+        self.asd_selection_label.setText(summary)
+
+    def show_asd_selection_dialog(self):
+        """Allow the user to choose which ASD cards to include in threshold scans."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Select ASD Cards")
+        dialog_layout = QVBoxLayout(dialog)
+
+        info = QLabel("Choose PPxA/PPxB cards to include in threshold scan calculations:")
+        dialog_layout.addWidget(info)
+
+        list_widget = QListWidget(dialog)
+        for card in self.available_asd_cards:
+            item = QListWidgetItem(card)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if card in self.selected_asd_cards else Qt.Unchecked)
+            list_widget.addItem(item)
+        dialog_layout.addWidget(list_widget)
+
+        quick_actions_layout = QHBoxLayout()
+        select_all_button = QPushButton("Select All")
+        clear_all_button = QPushButton("Clear All")
+        quick_actions_layout.addWidget(select_all_button)
+        quick_actions_layout.addWidget(clear_all_button)
+        dialog_layout.addLayout(quick_actions_layout)
+
+        def set_all(checked):
+            state = Qt.Checked if checked else Qt.Unchecked
+            for idx in range(list_widget.count()):
+                list_widget.item(idx).setCheckState(state)
+
+        select_all_button.clicked.connect(lambda: set_all(True))
+        clear_all_button.clicked.connect(lambda: set_all(False))
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dialog)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        dialog_layout.addWidget(button_box)
+
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        selected_cards = {
+            list_widget.item(idx).text()
+            for idx in range(list_widget.count())
+            if list_widget.item(idx).checkState() == Qt.Checked
+        }
+        if not selected_cards:
+            QMessageBox.warning(self, "Warning", "Select at least one ASD card.")
+            return
+
+        self.selected_asd_cards = selected_cards
+        self.update_asd_selection_label()
 
     def load_file(self):
         """Load and process files based on the selected mode."""
@@ -363,6 +453,11 @@ class TGC_QC_GUI_Plotly(QWidget):
 
     def plot_threshold_scan(self, file_names):
         """Plot threshold scan data from multiple files."""
+        selected_asd_cards = set(self.selected_asd_cards)
+        if not selected_asd_cards:
+            QMessageBox.warning(self, "Warning", "No ASD cards selected for threshold scan.")
+            return
+
         thresholds = []
         global_data = {'strip': [], 'wire': []}
         layer_data = {
@@ -395,6 +490,8 @@ class TGC_QC_GUI_Plotly(QWidget):
             }
 
             for tag, values in self.iter_pp_half_blocks(data):
+                if tag not in selected_asd_cards:
+                    continue
                 info = self.pp_channel_mapping[tag]
                 occs = [channel_vals[0] for channel_vals in values]
                 layer_vals[info['layer']][info['type']].extend(occs)
@@ -403,13 +500,19 @@ class TGC_QC_GUI_Plotly(QWidget):
                 else:
                     wire_vals.extend(occs)
 
-            if not strip_vals or not wire_vals:
+            if not strip_vals and not wire_vals:
                 continue
 
             thresholds.append(threshold)
             # Use standard deviation instead of variance for error bars
-            global_data['strip'].append((np.mean(strip_vals), np.std(strip_vals)))
-            global_data['wire'].append((np.mean(wire_vals), np.std(wire_vals)))
+            if strip_vals:
+                global_data['strip'].append((np.mean(strip_vals), np.std(strip_vals)))
+            else:
+                global_data['strip'].append((np.nan, 0))
+            if wire_vals:
+                global_data['wire'].append((np.mean(wire_vals), np.std(wire_vals)))
+            else:
+                global_data['wire'].append((np.nan, 0))
 
             for lyr in layer_vals:
                 for typ in ['strip', 'wire']:
@@ -417,7 +520,7 @@ class TGC_QC_GUI_Plotly(QWidget):
                     if len(vals):
                         layer_data[lyr][typ].append((np.mean(vals), np.std(vals)))
                     else:
-                        layer_data[lyr][typ].append((0, 0))
+                        layer_data[lyr][typ].append((np.nan, 0))
 
         if not thresholds:
             QMessageBox.warning(self, "Warning", "No valid threshold data found.")
@@ -437,34 +540,64 @@ class TGC_QC_GUI_Plotly(QWidget):
             rows=2, cols=2,
             subplot_titles=("Global", "L1", "L2", "L3")
         )
+
+        selected_sorted = self.sorted_asd_cards(selected_asd_cards)
+        cards_by_type = {'strip': [], 'wire': []}
+        cards_by_layer_type = {
+            0: {'strip': [], 'wire': []},
+            1: {'strip': [], 'wire': []},
+            2: {'strip': [], 'wire': []}
+        }
+        for card in selected_sorted:
+            info = self.pp_channel_mapping.get(card)
+            if not info:
+                continue
+            typ = info['type']
+            lyr = info['layer']
+            cards_by_type[typ].append(card)
+            cards_by_layer_type[lyr][typ].append(card)
+
+        def format_card_list(cards):
+            if not cards:
+                return "none"
+            return ", ".join(cards)
+
         use_log_scale = self.log_scale_button.isChecked()
         hidden_points_for_log = 0
+        trace_count = 0
 
         for name, series in global_data.items():
             means, stds = zip(*series)
             if use_log_scale:
                 means_plot = [mean if mean > 0 else np.nan for mean in means]
-                hidden_points_for_log += sum(mean <= 0 for mean in means)
+                hidden_points_for_log += sum((not np.isnan(mean)) and (mean <= 0) for mean in means)
             else:
                 means_plot = means
+
+            if not np.any(~np.isnan(np.array(means_plot, dtype=float))):
+                continue
             fig.add_trace(
                 go.Scatter(
                     x=thresholds,
                     y=means_plot,
-                    name=f"{name} (global)",
+                    name=f"{name} (global): {format_card_list(cards_by_type[name])}",
                     error_y=dict(type='data', array=stds, visible=True)
                 ),
                 row=1, col=1
             )
+            trace_count += 1
 
         for lyr in range(3):
             for typ in ['strip', 'wire']:
                 means, stds = zip(*layer_data[lyr][typ])
                 if use_log_scale:
                     means_plot = [mean if mean > 0 else np.nan for mean in means]
-                    hidden_points_for_log += sum(mean <= 0 for mean in means)
+                    hidden_points_for_log += sum((not np.isnan(mean)) and (mean <= 0) for mean in means)
                 else:
                     means_plot = means
+
+                if not np.any(~np.isnan(np.array(means_plot, dtype=float))):
+                    continue
                 # Map layers to subplot positions: L1->(1,2), L2->(2,1), L3->(2,2)
                 row = 1 + (lyr + 1) // 2
                 col = 1 + (lyr + 1) % 2
@@ -472,15 +605,27 @@ class TGC_QC_GUI_Plotly(QWidget):
                     go.Scatter(
                         x=thresholds,
                         y=means_plot,
-                        name=f"{typ} (L{lyr+1})",
+                        name=f"{typ} (L{lyr+1}): {format_card_list(cards_by_layer_type[lyr][typ])}",
                         error_y=dict(type='data', array=stds, visible=True)
                     ),
                     row=row, col=col
                 )
+                trace_count += 1
+
+        if trace_count == 0:
+            QMessageBox.warning(self, "Warning", "No plottable data found for the selected ASD cards.")
+            return
 
         y_axis_suffix = " [log]" if use_log_scale else ""
+        selected_title_cards = selected_sorted
+        if len(selected_title_cards) == len(self.available_asd_cards):
+            selected_title = "all ASD cards"
+        elif len(selected_title_cards) <= 4:
+            selected_title = ", ".join(selected_title_cards)
+        else:
+            selected_title = f"{len(selected_title_cards)} ASD cards"
         fig.update_layout(
-            title=f"Threshold Scan: Avg Occupancy vs Threshold{y_axis_suffix}",
+            title=f"Threshold Scan: Avg Occupancy vs Threshold{y_axis_suffix} ({selected_title})",
             height=800,
             margin=dict(t=50, b=50),
             showlegend=True
