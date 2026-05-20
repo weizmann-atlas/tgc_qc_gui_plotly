@@ -6,7 +6,8 @@ import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QFileDialog, QLabel, QTabWidget, QComboBox, QMessageBox,
-    QDialog, QListWidget, QListWidgetItem, QDialogButtonBox
+    QDialog, QListWidget, QListWidgetItem, QDialogButtonBox,
+    QLineEdit, QFormLayout, QScrollArea
 )
 from PyQt5.QtCore import Qt, QStandardPaths
 from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEngineProfile
@@ -45,13 +46,15 @@ class TGC_QC_GUI_Plotly(QWidget):
         }
         self.available_asd_cards = self.sorted_asd_cards(self.pp_channel_mapping.keys())
         self.selected_asd_cards = set(self.available_asd_cards)
+        self.noise_asd_data = {}
+        self.noise_asd_titles = {}
 
         self.layout = QVBoxLayout()
         self.setLayout(self.layout)
 
         self.label = QLabel("No file loaded")
         self.mode_selector = QComboBox()
-        self.mode_selector.addItems(["Noise", "Cosmic", "Threshold Scan", "Hit Rate (TODO)"])
+        self.mode_selector.addItems(["Noise", "Noise by ASD", "Cosmic", "Threshold Scan", "Hit Rate (TODO)"])
         self.load_button = QPushButton("Load .txt File")
         self.log_scale_button = QPushButton("Log Scale: OFF")
         self.log_scale_button.setCheckable(True)
@@ -59,10 +62,14 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.asd_selection_label = QLabel("")
         self.switch_tab_button = QPushButton("Main Plot")
         self.show_mapping_button = QPushButton("Show Mapping")
+        self.save_pdf_button = QPushButton("Save PDF")
+        self.save_pdf_button.setVisible(False)
+        self.save_pdf_button.clicked.connect(self.save_noise_asd_pdf)
         self.update_load_button_label()
         self.update_log_scale_button_label()
         self.update_asd_selection_label()
         self.mode_selector.currentIndexChanged.connect(self.update_load_button_label)
+        self.mode_selector.currentIndexChanged.connect(self._update_save_pdf_visibility)
         self.log_scale_button.toggled.connect(self.update_log_scale_button_label)
         self.select_asd_button.clicked.connect(self.show_asd_selection_dialog)
 
@@ -77,6 +84,7 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.layout.addWidget(self.select_asd_button)
         self.layout.addWidget(self.asd_selection_label)
         self.layout.addWidget(self.show_mapping_button)
+        self.layout.addWidget(self.save_pdf_button)
         self.layout.addWidget(self.switch_tab_button)
 
         self.tabs = QTabWidget()
@@ -128,7 +136,7 @@ class TGC_QC_GUI_Plotly(QWidget):
             self.load_button.setText("Load Threshold Files")
         elif mode == "Cosmic":
             self.load_button.setText("Load Cosmic File")
-        elif mode == "Noise":
+        elif mode in ("Noise", "Noise by ASD"):
             self.load_button.setText("Load Noise File")
         else:
             self.load_button.setText("Load File")
@@ -166,6 +174,11 @@ class TGC_QC_GUI_Plotly(QWidget):
         else:
             summary = f"ASD cards: {selected_count}/{total} selected"
         self.asd_selection_label.setText(summary)
+
+    def _update_save_pdf_visibility(self):
+        self.save_pdf_button.setVisible(
+            self.mode_selector.currentText() == "Noise by ASD"
+        )
 
     def show_asd_selection_dialog(self):
         """Allow the user to choose which ASD cards to include in threshold scans."""
@@ -219,6 +232,36 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.selected_asd_cards = selected_cards
         self.update_asd_selection_label()
 
+    def _ask_asd_titles(self, tags):
+        """Show a dialog to set a custom title for each ASD card. Returns {tag: title} or None on cancel."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("ASD Card Titles")
+        outer_layout = QVBoxLayout(dialog)
+        outer_layout.addWidget(QLabel("Enter a title for each ASD card (used in charts and PDF):"))
+
+        form_widget = QWidget()
+        form_layout = QFormLayout(form_widget)
+        edits = {}
+        for tag in tags:
+            edit = QLineEdit(tag)
+            form_layout.addRow(tag, edit)
+            edits[tag] = edit
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(form_widget)
+        scroll.setMinimumHeight(min(300, 40 * len(tags) + 20))
+        outer_layout.addWidget(scroll)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dialog)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        outer_layout.addWidget(button_box)
+
+        if dialog.exec_() != QDialog.Accepted:
+            return None
+        return {tag: edits[tag].text().strip() or tag for tag in tags}
+
     def load_file(self):
         """Load and process files based on the selected mode."""
         mode = self.mode_selector.currentText()
@@ -249,6 +292,10 @@ class TGC_QC_GUI_Plotly(QWidget):
                 with open(file_name, 'r') as f:
                     lines = f.readlines()
                 self.plot_noise_file(lines)
+            elif mode == "Noise by ASD":
+                with open(file_name, 'r') as f:
+                    lines = f.readlines()
+                self.plot_noise_by_asd(lines)
             elif mode == "Cosmic":
                 self.plot_cosmic_root(file_name)
             else:
@@ -450,6 +497,140 @@ class TGC_QC_GUI_Plotly(QWidget):
         tab.setHtml(html)
         self.tabs.addTab(tab, f"Plot {self.tabs.count() + 1}")
         self.tabs.setCurrentWidget(tab)
+
+    def plot_noise_by_asd(self, lines):
+        """Plot one bar chart per ASD card showing val1 for channels 0–15."""
+        data = self.parse_pp_blocks(lines)
+        asd_data = {}
+        for tag, values in self.iter_pp_half_blocks(data):
+            val1_list = [ch[0] for ch in values]
+            if len(val1_list) != 16:
+                continue
+            asd_data[tag] = val1_list
+
+        if not asd_data:
+            QMessageBox.warning(self, "Warning", "No valid data found in file.")
+            return
+
+        ordered_tags = self.sorted_asd_cards(asd_data.keys())
+        titles = self._ask_asd_titles(ordered_tags)
+        if titles is None:
+            return
+
+        self.noise_asd_data = {tag: asd_data[tag] for tag in ordered_tags}
+        self.noise_asd_titles = titles
+
+        use_log = self.log_scale_button.isChecked()
+        channels = list(range(16))
+        first_new_index = self.tabs.count()
+
+        for tag in ordered_tags:
+            val1 = asd_data[tag]
+            title = titles[tag]
+
+            if use_log:
+                y_values = [np.log10(v) if v > 0 else None for v in val1]
+                y_axis_title = "log10(val1)"
+            else:
+                y_values = val1
+                y_axis_title = "val1"
+
+            info = self.pp_channel_mapping.get(tag, {})
+            subtitle = (
+                f"Layer {info.get('layer', '?')}, "
+                f"{info.get('type', '?')}, "
+                f"ch {info.get('channels', '?')}"
+            )
+
+            fig = go.Figure(data=go.Bar(
+                x=channels,
+                y=y_values,
+                marker_color='steelblue'
+            ))
+            fig.update_layout(
+                title=f"{title}<br><sup>{tag} — {subtitle}</sup>",
+                xaxis_title="Channel (0–15)",
+                yaxis_title=y_axis_title,
+                xaxis=dict(tickmode='linear', tick0=0, dtick=1),
+                margin=dict(t=70, b=50)
+            )
+
+            html = pio.to_html(fig, full_html=True, include_plotlyjs='cdn')
+            tab = QWebEngineView()
+            tab.setHtml(html)
+            self.tabs.addTab(tab, title)
+
+        if ordered_tags:
+            self.tabs.setCurrentIndex(first_new_index)
+
+    def save_noise_asd_pdf(self):
+        """Export all per-ASD bar charts to a single multi-page PDF."""
+        if not self.noise_asd_data:
+            QMessageBox.warning(self, "Warning", "No Noise by ASD data loaded. Load a file first.")
+            return
+
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            from matplotlib.backends.backend_pdf import PdfPages
+        except ImportError:
+            QMessageBox.critical(
+                self, "Missing Dependency",
+                "The 'matplotlib' module is not installed. Please install it with 'pip install matplotlib'."
+            )
+            return
+
+        download_dir = (
+            QStandardPaths.writableLocation(QStandardPaths.DownloadLocation)
+            or os.path.expanduser("~/Downloads")
+        )
+        default_path = os.path.join(download_dir, "noise_by_asd.pdf")
+        save_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Noise by ASD PDF", default_path, "PDF Files (*.pdf);;All Files (*)"
+        )
+        if not save_path:
+            return
+
+        use_log = self.log_scale_button.isChecked()
+        channels = list(range(16))
+
+        try:
+            with PdfPages(save_path) as pdf:
+                for tag in self.sorted_asd_cards(self.noise_asd_data.keys()):
+                    val1 = self.noise_asd_data[tag]
+                    title = self.noise_asd_titles.get(tag, tag)
+                    info = self.pp_channel_mapping.get(tag, {})
+                    subtitle = (
+                        f"Layer {info.get('layer', '?')}, "
+                        f"{info.get('type', '?')}, "
+                        f"ch {info.get('channels', '?')}"
+                    )
+
+                    if use_log:
+                        y_values = [np.log10(v) if v > 0 else np.nan for v in val1]
+                        y_label = "log10(val1)"
+                        zero_count = sum(v <= 0 for v in val1)
+                    else:
+                        y_values = val1
+                        y_label = "val1"
+                        zero_count = 0
+
+                    fig, ax = plt.subplots(figsize=(10, 5))
+                    ax.bar(channels, y_values, color='steelblue')
+                    page_title = f"{title}\n{tag} — {subtitle}"
+                    if zero_count:
+                        page_title += f"\n({zero_count} zero/non-positive channel(s) hidden in log scale)"
+                    ax.set_title(page_title, fontsize=11)
+                    ax.set_xlabel("Channel (0–15)", fontsize=10)
+                    ax.set_ylabel(y_label, fontsize=10)
+                    ax.set_xticks(channels)
+                    pdf.savefig(fig, bbox_inches='tight')
+                    plt.close(fig)
+
+            self.label.setText(f"PDF saved: {save_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save PDF: {str(e)}")
 
     def plot_threshold_scan(self, file_names):
         """Plot threshold scan data from multiple files."""
