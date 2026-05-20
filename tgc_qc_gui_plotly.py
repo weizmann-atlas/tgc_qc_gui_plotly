@@ -46,15 +46,15 @@ class TGC_QC_GUI_Plotly(QWidget):
         }
         self.available_asd_cards = self.sorted_asd_cards(self.pp_channel_mapping.keys())
         self.selected_asd_cards = set(self.available_asd_cards)
-        self.noise_asd_data = {}
-        self.noise_asd_titles = {}
+        self.thr_asd_data = {}
+        self.thr_asd_titles = {}
 
         self.layout = QVBoxLayout()
         self.setLayout(self.layout)
 
         self.label = QLabel("No file loaded")
         self.mode_selector = QComboBox()
-        self.mode_selector.addItems(["Noise", "Noise by ASD", "Cosmic", "Threshold Scan", "Hit Rate (TODO)"])
+        self.mode_selector.addItems(["Noise", "Cosmic", "Threshold Scan", "Threshold by ASD", "Hit Rate (TODO)"])
         self.load_button = QPushButton("Load .txt File")
         self.log_scale_button = QPushButton("Log Scale: OFF")
         self.log_scale_button.setCheckable(True)
@@ -64,7 +64,7 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.show_mapping_button = QPushButton("Show Mapping")
         self.save_pdf_button = QPushButton("Save PDF")
         self.save_pdf_button.setVisible(False)
-        self.save_pdf_button.clicked.connect(self.save_noise_asd_pdf)
+        self.save_pdf_button.clicked.connect(self.save_thr_asd_pdf)
         self.update_load_button_label()
         self.update_log_scale_button_label()
         self.update_asd_selection_label()
@@ -132,11 +132,11 @@ class TGC_QC_GUI_Plotly(QWidget):
     def update_load_button_label(self):
         """Update the load button text based on the selected mode."""
         mode = self.mode_selector.currentText()
-        if mode == "Threshold Scan":
+        if mode in ("Threshold Scan", "Threshold by ASD"):
             self.load_button.setText("Load Threshold Files")
         elif mode == "Cosmic":
             self.load_button.setText("Load Cosmic File")
-        elif mode in ("Noise", "Noise by ASD"):
+        elif mode == "Noise":
             self.load_button.setText("Load Noise File")
         else:
             self.load_button.setText("Load File")
@@ -177,7 +177,7 @@ class TGC_QC_GUI_Plotly(QWidget):
 
     def _update_save_pdf_visibility(self):
         self.save_pdf_button.setVisible(
-            self.mode_selector.currentText() == "Noise by ASD"
+            self.mode_selector.currentText() == "Threshold by ASD"
         )
 
     def show_asd_selection_dialog(self):
@@ -266,36 +266,35 @@ class TGC_QC_GUI_Plotly(QWidget):
         """Load and process files based on the selected mode."""
         mode = self.mode_selector.currentText()
 
-        if mode == "Threshold Scan":
+        if mode in ("Threshold Scan", "Threshold by ASD"):
             file_names, _ = QFileDialog.getOpenFileNames(
                 self, "Open Threshold Files", "", "Text Files (*.txt);;All Files (*)"
             )
             if not file_names:
                 return
             self.label.setText(f"Loaded: {len(file_names)} files")
-            self.plot_threshold_scan(file_names)
+            if mode == "Threshold Scan":
+                self.plot_threshold_scan(file_names)
+            else:
+                self.plot_threshold_scan_by_asd(file_names)
             return
 
         if mode == "Cosmic":
             file_filter = "ROOT Files (*.root);;All Files (*)"
         else:
             file_filter = "Text Files (*.txt);;All Files (*)"
-        
+
         file_name, _ = QFileDialog.getOpenFileName(self, "Open File", "", file_filter)
         if not file_name:
             return
 
         self.label.setText(f"Loaded: {file_name}")
-        
+
         try:
             if mode == "Noise":
                 with open(file_name, 'r') as f:
                     lines = f.readlines()
                 self.plot_noise_file(lines)
-            elif mode == "Noise by ASD":
-                with open(file_name, 'r') as f:
-                    lines = f.readlines()
-                self.plot_noise_by_asd(lines)
             elif mode == "Cosmic":
                 self.plot_cosmic_root(file_name)
             else:
@@ -498,43 +497,64 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.tabs.addTab(tab, f"Plot {self.tabs.count() + 1}")
         self.tabs.setCurrentWidget(tab)
 
-    def plot_noise_by_asd(self, lines):
-        """Plot one bar chart per ASD card showing val1 for channels 0–15."""
-        data = self.parse_pp_blocks(lines)
-        asd_data = {}
-        for tag, values in self.iter_pp_half_blocks(data):
-            val1_list = [ch[0] for ch in values]
-            if len(val1_list) != 16:
-                continue
-            asd_data[tag] = val1_list
-
-        if not asd_data:
-            QMessageBox.warning(self, "Warning", "No valid data found in file.")
+    def plot_threshold_scan_by_asd(self, file_names):
+        """Plot mean val1 vs threshold for each selected ASD card individually."""
+        selected_asd_cards = set(self.selected_asd_cards)
+        if not selected_asd_cards:
+            QMessageBox.warning(self, "Warning", "No ASD cards selected.")
             return
 
-        ordered_tags = self.sorted_asd_cards(asd_data.keys())
+        per_card_data = {tag: [] for tag in selected_asd_cards}
+
+        for file_path in file_names:
+            match = re.search(r"_(\d+)mV", file_path)
+            if not match:
+                continue
+            threshold = int(match.group(1))
+
+            try:
+                with open(file_path, 'r') as f:
+                    data = self.parse_pp_blocks(f.readlines())
+            except Exception as e:
+                QMessageBox.warning(self, "Warning", f"Failed to read file {file_path}: {str(e)}")
+                continue
+
+            for tag, values in self.iter_pp_half_blocks(data):
+                if tag not in selected_asd_cards:
+                    continue
+                occs = [ch[0] for ch in values]
+                per_card_data[tag].append((threshold, np.mean(occs), np.std(occs)))
+
+        ordered_tags = self.sorted_asd_cards(
+            tag for tag, pts in per_card_data.items() if pts
+        )
+        if not ordered_tags:
+            QMessageBox.warning(self, "Warning", "No valid threshold data found.")
+            return
+
         titles = self._ask_asd_titles(ordered_tags)
         if titles is None:
             return
 
-        self.noise_asd_data = {tag: asd_data[tag] for tag in ordered_tags}
-        self.noise_asd_titles = titles
+        for tag in ordered_tags:
+            per_card_data[tag].sort(key=lambda t: t[0])
+
+        self.thr_asd_data = {
+            tag: {
+                'thresholds': [pt[0] for pt in per_card_data[tag]],
+                'means':      [pt[1] for pt in per_card_data[tag]],
+                'stds':       [pt[2] for pt in per_card_data[tag]],
+            }
+            for tag in ordered_tags
+        }
+        self.thr_asd_titles = titles
 
         use_log = self.log_scale_button.isChecked()
-        channels = list(range(16))
         first_new_index = self.tabs.count()
 
         for tag in ordered_tags:
-            val1 = asd_data[tag]
+            d = self.thr_asd_data[tag]
             title = titles[tag]
-
-            if use_log:
-                y_values = [np.log10(v) if v > 0 else None for v in val1]
-                y_axis_title = "log10(val1)"
-            else:
-                y_values = val1
-                y_axis_title = "val1"
-
             info = self.pp_channel_mapping.get(tag, {})
             subtitle = (
                 f"Layer {info.get('layer', '?')}, "
@@ -542,31 +562,40 @@ class TGC_QC_GUI_Plotly(QWidget):
                 f"ch {info.get('channels', '?')}"
             )
 
-            fig = go.Figure(data=go.Bar(
-                x=channels,
-                y=y_values,
-                marker_color='steelblue'
+            if use_log:
+                means_plot = [m if m > 0 else None for m in d['means']]
+                y_axis_title = "Mean val1 [log]"
+            else:
+                means_plot = d['means']
+                y_axis_title = "Mean val1"
+
+            fig = go.Figure(data=go.Scatter(
+                x=d['thresholds'],
+                y=means_plot,
+                mode='lines+markers',
+                error_y=dict(type='data', array=d['stds'], visible=True),
+                marker=dict(color='steelblue')
             ))
             fig.update_layout(
                 title=f"{title}<br><sup>{tag} — {subtitle}</sup>",
-                xaxis_title="Channel (0–15)",
+                xaxis_title="Threshold (mV)",
                 yaxis_title=y_axis_title,
-                xaxis=dict(tickmode='linear', tick0=0, dtick=1),
                 margin=dict(t=70, b=50)
             )
+            if use_log:
+                fig.update_yaxes(type='log')
 
             html = pio.to_html(fig, full_html=True, include_plotlyjs='cdn')
             tab = QWebEngineView()
             tab.setHtml(html)
             self.tabs.addTab(tab, title)
 
-        if ordered_tags:
-            self.tabs.setCurrentIndex(first_new_index)
+        self.tabs.setCurrentIndex(first_new_index)
 
-    def save_noise_asd_pdf(self):
-        """Export all per-ASD bar charts to a single multi-page PDF."""
-        if not self.noise_asd_data:
-            QMessageBox.warning(self, "Warning", "No Noise by ASD data loaded. Load a file first.")
+    def save_thr_asd_pdf(self):
+        """Export all per-ASD threshold scan charts to a single multi-page PDF."""
+        if not self.thr_asd_data:
+            QMessageBox.warning(self, "Warning", "No Threshold by ASD data loaded. Load files first.")
             return
 
         try:
@@ -585,21 +614,20 @@ class TGC_QC_GUI_Plotly(QWidget):
             QStandardPaths.writableLocation(QStandardPaths.DownloadLocation)
             or os.path.expanduser("~/Downloads")
         )
-        default_path = os.path.join(download_dir, "noise_by_asd.pdf")
+        default_path = os.path.join(download_dir, "threshold_by_asd.pdf")
         save_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Noise by ASD PDF", default_path, "PDF Files (*.pdf);;All Files (*)"
+            self, "Save Threshold by ASD PDF", default_path, "PDF Files (*.pdf);;All Files (*)"
         )
         if not save_path:
             return
 
         use_log = self.log_scale_button.isChecked()
-        channels = list(range(16))
 
         try:
             with PdfPages(save_path) as pdf:
-                for tag in self.sorted_asd_cards(self.noise_asd_data.keys()):
-                    val1 = self.noise_asd_data[tag]
-                    title = self.noise_asd_titles.get(tag, tag)
+                for tag in self.sorted_asd_cards(self.thr_asd_data.keys()):
+                    d = self.thr_asd_data[tag]
+                    title = self.thr_asd_titles.get(tag, tag)
                     info = self.pp_channel_mapping.get(tag, {})
                     subtitle = (
                         f"Layer {info.get('layer', '?')}, "
@@ -607,24 +635,33 @@ class TGC_QC_GUI_Plotly(QWidget):
                         f"ch {info.get('channels', '?')}"
                     )
 
+                    thresholds = d['thresholds']
+                    means = np.array(d['means'], dtype=float)
+                    stds = np.array(d['stds'], dtype=float)
+
                     if use_log:
-                        y_values = [np.log10(v) if v > 0 else np.nan for v in val1]
-                        y_label = "log10(val1)"
-                        zero_count = sum(v <= 0 for v in val1)
+                        valid = means > 0
+                        means_plot = np.where(valid, means, np.nan)
+                        stds_plot = np.where(valid, stds, np.nan)
+                        hidden = int(np.sum(~valid))
+                        y_label = "Mean val1 [log]"
                     else:
-                        y_values = val1
-                        y_label = "val1"
-                        zero_count = 0
+                        means_plot = means
+                        stds_plot = stds
+                        hidden = 0
+                        y_label = "Mean val1"
 
                     fig, ax = plt.subplots(figsize=(10, 5))
-                    ax.bar(channels, y_values, color='steelblue')
+                    ax.errorbar(thresholds, means_plot, yerr=stds_plot,
+                                marker='o', capsize=4, color='steelblue')
+                    if use_log:
+                        ax.set_yscale('log')
                     page_title = f"{title}\n{tag} — {subtitle}"
-                    if zero_count:
-                        page_title += f"\n({zero_count} zero/non-positive channel(s) hidden in log scale)"
+                    if hidden:
+                        page_title += f"\n({hidden} non-positive point(s) hidden in log scale)"
                     ax.set_title(page_title, fontsize=11)
-                    ax.set_xlabel("Channel (0–15)", fontsize=10)
+                    ax.set_xlabel("Threshold (mV)", fontsize=10)
                     ax.set_ylabel(y_label, fontsize=10)
-                    ax.set_xticks(channels)
                     pdf.savefig(fig, bbox_inches='tight')
                     plt.close(fig)
 
