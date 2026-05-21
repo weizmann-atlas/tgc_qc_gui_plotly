@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QFileDialog, QLabel, QTabWidget, QComboBox, QMessageBox,
     QDialog, QListWidget, QListWidgetItem, QDialogButtonBox,
-    QLineEdit, QFormLayout, QScrollArea
+    QLineEdit, QFormLayout, QScrollArea, QGroupBox, QSizePolicy
 )
 from PyQt5.QtCore import Qt, QStandardPaths
 from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEngineProfile
@@ -22,7 +22,7 @@ class TGC_QC_GUI_Plotly(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("TGC Noise and Cosmic Viewer - Plotly")
-        self.resize(1000, 800)
+        self.resize(1100, 750)
         self.web_profile = QWebEngineProfile.defaultProfile()
         self.web_profile.downloadRequested.connect(self.handle_download_requested)
 
@@ -50,49 +50,91 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.thr_asd_titles = {}
         self.tab_renderers = {}
 
-        self.layout = QVBoxLayout()
-        self.setLayout(self.layout)
-
+        # ── Widgets ────────────────────────────────────────────────────────────
         self.label = QLabel("No file loaded")
+        self.label.setWordWrap(True)
+        self.label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.label.setStyleSheet("font-size: 10px; color: gray;")
+
         self.mode_selector = QComboBox()
         self.mode_selector.addItems(["Noise", "Cosmic", "Threshold Scan", "Threshold by ASD", "Hit Rate (TODO)"])
+
         self.load_button = QPushButton("Load .txt File")
+
         self.log_scale_button = QPushButton("Log Scale: OFF")
         self.log_scale_button.setCheckable(True)
-        self.select_asd_button = QPushButton("Select ASD Cards (Threshold Scan)")
+
+        self.select_asd_button = QPushButton("Select ASD Cards")
         self.asd_selection_label = QLabel("")
-        self.switch_tab_button = QPushButton("Main Plot")
+        self.asd_selection_label.setWordWrap(True)
+        self.asd_selection_label.setStyleSheet("font-size: 10px;")
+
         self.show_mapping_button = QPushButton("Show Mapping")
         self.save_pdf_button = QPushButton("Save PDF")
         self.save_pdf_button.setVisible(False)
+        self.switch_tab_button = QPushButton("Next Tab ▶")
+
+        # ── Signals ────────────────────────────────────────────────────────────
         self.save_pdf_button.clicked.connect(self.save_thr_asd_pdf)
-        self.update_load_button_label()
-        self.update_log_scale_button_label()
-        self.update_asd_selection_label()
+        self.load_button.clicked.connect(self.load_file)
+        self.switch_tab_button.clicked.connect(self.switch_plot_tab)
+        self.show_mapping_button.clicked.connect(self.show_mapping_dialog)
+        self.select_asd_button.clicked.connect(self.show_asd_selection_dialog)
         self.mode_selector.currentIndexChanged.connect(self.update_load_button_label)
         self.mode_selector.currentIndexChanged.connect(self._update_save_pdf_visibility)
         self.log_scale_button.toggled.connect(self.update_log_scale_button_label)
         self.log_scale_button.toggled.connect(self._replot_all_tabs)
-        self.select_asd_button.clicked.connect(self.show_asd_selection_dialog)
 
-        self.load_button.clicked.connect(self.load_file)
-        self.switch_tab_button.clicked.connect(self.switch_plot_tab)
-        self.show_mapping_button.clicked.connect(self.show_mapping_dialog)
+        self.update_load_button_label()
+        self.update_log_scale_button_label()
+        self.update_asd_selection_label()
 
-        self.layout.addWidget(self.label)
-        self.layout.addWidget(self.mode_selector)
-        self.layout.addWidget(self.load_button)
-        self.layout.addWidget(self.log_scale_button)
-        self.layout.addWidget(self.select_asd_button)
-        self.layout.addWidget(self.asd_selection_label)
-        self.layout.addWidget(self.show_mapping_button)
-        self.layout.addWidget(self.save_pdf_button)
-        self.layout.addWidget(self.switch_tab_button)
+        # ── Sidebar ────────────────────────────────────────────────────────────
+        sidebar = QWidget()
+        sidebar.setFixedWidth(220)
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(0, 0, 4, 0)
+        sidebar_layout.setSpacing(6)
 
+        mode_group = QGroupBox("Mode")
+        mg = QVBoxLayout(mode_group)
+        mg.addWidget(self.mode_selector)
+        mg.addWidget(self.load_button)
+
+        display_group = QGroupBox("Display")
+        dg = QVBoxLayout(display_group)
+        dg.addWidget(self.log_scale_button)
+
+        asd_group = QGroupBox("ASD Cards")
+        ag = QVBoxLayout(asd_group)
+        ag.addWidget(self.select_asd_button)
+        ag.addWidget(self.asd_selection_label)
+
+        tools_group = QGroupBox("Tools")
+        tg = QVBoxLayout(tools_group)
+        tg.addWidget(self.show_mapping_button)
+        tg.addWidget(self.save_pdf_button)
+        tg.addWidget(self.switch_tab_button)
+
+        sidebar_layout.addWidget(mode_group)
+        sidebar_layout.addWidget(display_group)
+        sidebar_layout.addWidget(asd_group)
+        sidebar_layout.addWidget(tools_group)
+        sidebar_layout.addStretch()
+        sidebar_layout.addWidget(self.label)
+
+        # ── Tabs ───────────────────────────────────────────────────────────────
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self._remove_tab)
-        self.layout.addWidget(self.tabs)
+
+        # ── Main layout ────────────────────────────────────────────────────────
+        main_layout = QHBoxLayout()
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        main_layout.setSpacing(6)
+        self.setLayout(main_layout)
+        main_layout.addWidget(sidebar)
+        main_layout.addWidget(self.tabs, stretch=1)
 
     def handle_download_requested(self, download_item):
         """Handle downloads triggered from embedded Plotly controls."""
