@@ -48,6 +48,7 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.selected_asd_cards = set(self.available_asd_cards)
         self.thr_asd_data = {}
         self.thr_asd_titles = {}
+        self.tab_renderers = {}
 
         self.layout = QVBoxLayout()
         self.setLayout(self.layout)
@@ -71,6 +72,7 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.mode_selector.currentIndexChanged.connect(self.update_load_button_label)
         self.mode_selector.currentIndexChanged.connect(self._update_save_pdf_visibility)
         self.log_scale_button.toggled.connect(self.update_log_scale_button_label)
+        self.log_scale_button.toggled.connect(self._replot_all_tabs)
         self.select_asd_button.clicked.connect(self.show_asd_selection_dialog)
 
         self.load_button.clicked.connect(self.load_file)
@@ -89,7 +91,7 @@ class TGC_QC_GUI_Plotly(QWidget):
 
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
-        self.tabs.tabCloseRequested.connect(self.tabs.removeTab)
+        self.tabs.tabCloseRequested.connect(self._remove_tab)
         self.layout.addWidget(self.tabs)
 
     def handle_download_requested(self, download_item):
@@ -262,6 +264,22 @@ class TGC_QC_GUI_Plotly(QWidget):
             return None
         return {tag: edits[tag].text().strip() or tag for tag in tags}
 
+    def _add_renderable_tab(self, render_func, label):
+        view = QWebEngineView()
+        view.setHtml(render_func())
+        self.tab_renderers[view] = render_func
+        self.tabs.addTab(view, label)
+        return view
+
+    def _remove_tab(self, idx):
+        widget = self.tabs.widget(idx)
+        self.tab_renderers.pop(widget, None)
+        self.tabs.removeTab(idx)
+
+    def _replot_all_tabs(self):
+        for view, render_func in self.tab_renderers.items():
+            view.setHtml(render_func())
+
     def load_file(self):
         """Load and process files based on the selected mode."""
         mode = self.mode_selector.currentText()
@@ -412,35 +430,30 @@ class TGC_QC_GUI_Plotly(QWidget):
                 else:
                     occupancy_wire[layer][channel] += 1
 
-        fig = make_subplots(
-            rows=1, cols=2,
-            subplot_titles=("Strip Occupancy", "Wire Occupancy")
-        )
-        fig.add_trace(
-            go.Heatmap(
-                z=occupancy_strip,
-                x=list(range(32)),
-                y=["L0", "L1", "L2"],
-                colorscale='Viridis'
-            ),
-            row=1, col=1
-        )
-        fig.add_trace(
-            go.Heatmap(
-                z=occupancy_wire,
-                x=list(range(32)),
-                y=["L0", "L1", "L2"],
-                colorscale='Viridis'
-            ),
-            row=1, col=2
-        )
+        def render(occ_strip=occupancy_strip.copy(), occ_wire=occupancy_wire.copy()):
+            use_log = self.log_scale_button.isChecked()
+            colorbar_title = "count"
+            s, w = occ_strip.copy(), occ_wire.copy()
+            if use_log:
+                for arr in (s, w):
+                    pos = arr > 0
+                    min_pos = float(np.min(arr[pos])) if np.any(pos) else 1.0
+                    arr[:] = np.log10(np.where(pos, arr, min_pos))
+                colorbar_title = "log10(count)"
+            title_suffix = " (log z)" if use_log else ""
+            f = make_subplots(rows=1, cols=2,
+                              subplot_titles=("Strip Occupancy", "Wire Occupancy"))
+            f.add_trace(go.Heatmap(z=s, x=list(range(32)), y=["L0", "L1", "L2"],
+                                   colorscale='Viridis',
+                                   colorbar=dict(title=colorbar_title)), row=1, col=1)
+            f.add_trace(go.Heatmap(z=w, x=list(range(32)), y=["L0", "L1", "L2"],
+                                   colorscale='Viridis', showscale=False), row=1, col=2)
+            f.update_layout(title=f"Cosmic Occupancy Heatmap{title_suffix}", height=500)
+            return pio.to_html(f, full_html=True, include_plotlyjs='cdn')
 
-        fig.update_layout(title="Cosmic Occupancy Heatmap", height=500)
-        html = pio.to_html(fig, full_html=True, include_plotlyjs='cdn')
-        tab = QWebEngineView()
-        tab.setHtml(html)
-        self.tabs.addTab(tab, f"Plot {self.tabs.count() + 1}")
-        self.tabs.setCurrentWidget(tab)
+        tab_label = f"Plot {self.tabs.count() + 1}"
+        view = self._add_renderable_tab(render, tab_label)
+        self.tabs.setCurrentWidget(view)
 
     def plot_noise_file(self, lines):
         """Plot noise data from parsed text file lines."""
@@ -460,42 +473,36 @@ class TGC_QC_GUI_Plotly(QWidget):
             return
 
         hitmap = np.array(heatmap_data).T
-        use_log_scale = self.log_scale_button.isChecked()
-        z_data = hitmap
-        z_title = "val1"
 
-        if use_log_scale:
-            positive_mask = hitmap > 0
-            if not np.any(positive_mask):
-                QMessageBox.warning(self, "Warning", "Log scale requires at least one positive value.")
-                return
-            min_positive = float(np.min(hitmap[positive_mask]))
-            # Plotly heatmap colorbars do not support native log scaling.
-            # Transform z explicitly and clamp non-positive values to the lowest positive entry.
-            z_data = np.log10(np.where(positive_mask, hitmap, min_positive))
-            z_title = "log10(val1)"
+        def render(hm=hitmap, tags=valid_tags):
+            use_log = self.log_scale_button.isChecked()
+            z_title = "val1"
+            if use_log:
+                positive_mask = hm > 0
+                if not np.any(positive_mask):
+                    return "<h3>Log scale: no positive values in data.</h3>"
+                min_positive = float(np.min(hm[positive_mask]))
+                # Plotly heatmap colorbars do not support native log scaling.
+                # Transform z explicitly and clamp non-positive values to the lowest positive entry.
+                z_data = np.log10(np.where(positive_mask, hm, min_positive))
+                z_title = "log10(val1)"
+            else:
+                z_data = hm
+            title_suffix = " (log z)" if use_log else ""
+            fig = go.Figure(data=go.Heatmap(
+                z=z_data, x=tags, y=list(range(16)),
+                colorscale='Viridis', colorbar=dict(title=z_title)
+            ))
+            fig.update_layout(
+                title=f"Noise Rate per Channel per PP Half (val1){title_suffix}",
+                xaxis_title="PP Half", yaxis_title="Channel (0–15)",
+                margin=dict(t=50, b=50)
+            )
+            return pio.to_html(fig, full_html=True, include_plotlyjs='cdn')
 
-        fig = go.Figure(data=go.Heatmap(
-            z=z_data,
-            x=valid_tags,
-            y=list(range(16)),
-            colorscale='Viridis',
-            colorbar=dict(title=z_title)
-        ))
-
-        title_suffix = " (log z)" if use_log_scale else ""
-        fig.update_layout(
-            title=f"Noise Rate per Channel per PP Half (val1){title_suffix}",
-            xaxis_title="PP Half",
-            yaxis_title="Channel (0–15)",
-            margin=dict(t=50, b=50)
-        )
-
-        html = pio.to_html(fig, full_html=True, include_plotlyjs='cdn')
-        tab = QWebEngineView()
-        tab.setHtml(html)
-        self.tabs.addTab(tab, f"Plot {self.tabs.count() + 1}")
-        self.tabs.setCurrentWidget(tab)
+        tab_label = f"Plot {self.tabs.count() + 1}"
+        view = self._add_renderable_tab(render, tab_label)
+        self.tabs.setCurrentWidget(view)
 
     def plot_threshold_scan_by_asd(self, file_names):
         """Plot mean val1 vs threshold for each selected ASD card individually."""
@@ -549,7 +556,6 @@ class TGC_QC_GUI_Plotly(QWidget):
         }
         self.thr_asd_titles = titles
 
-        use_log = self.log_scale_button.isChecked()
         first_new_index = self.tabs.count()
 
         for tag in ordered_tags:
@@ -562,33 +568,30 @@ class TGC_QC_GUI_Plotly(QWidget):
                 f"ch {info.get('channels', '?')}"
             )
 
-            if use_log:
-                means_plot = [m if m > 0 else None for m in d['means']]
-                y_axis_title = "Mean val1 [log]"
-            else:
-                means_plot = d['means']
-                y_axis_title = "Mean val1"
+            def render(d=d, title=title, tag=tag, subtitle=subtitle):
+                use_log = self.log_scale_button.isChecked()
+                if use_log:
+                    means_plot = [m if m > 0 else None for m in d['means']]
+                    y_axis_title = "Mean val1 [log]"
+                else:
+                    means_plot = d['means']
+                    y_axis_title = "Mean val1"
+                fig = go.Figure(data=go.Scatter(
+                    x=d['thresholds'], y=means_plot,
+                    mode='lines+markers',
+                    error_y=dict(type='data', array=d['stds'], visible=True),
+                    marker=dict(color='steelblue')
+                ))
+                fig.update_layout(
+                    title=f"{title}<br><sup>{tag} — {subtitle}</sup>",
+                    xaxis_title="Threshold (mV)", yaxis_title=y_axis_title,
+                    margin=dict(t=70, b=50)
+                )
+                if use_log:
+                    fig.update_yaxes(type='log')
+                return pio.to_html(fig, full_html=True, include_plotlyjs='cdn')
 
-            fig = go.Figure(data=go.Scatter(
-                x=d['thresholds'],
-                y=means_plot,
-                mode='lines+markers',
-                error_y=dict(type='data', array=d['stds'], visible=True),
-                marker=dict(color='steelblue')
-            ))
-            fig.update_layout(
-                title=f"{title}<br><sup>{tag} — {subtitle}</sup>",
-                xaxis_title="Threshold (mV)",
-                yaxis_title=y_axis_title,
-                margin=dict(t=70, b=50)
-            )
-            if use_log:
-                fig.update_yaxes(type='log')
-
-            html = pio.to_html(fig, full_html=True, include_plotlyjs='cdn')
-            tab = QWebEngineView()
-            tab.setHtml(html)
-            self.tabs.addTab(tab, title)
+            self._add_renderable_tab(render, title)
 
         self.tabs.setCurrentIndex(first_new_index)
 
@@ -754,11 +757,6 @@ class TGC_QC_GUI_Plotly(QWidget):
             for typ in ['strip', 'wire']:
                 layer_data[lyr][typ] = [layer_data[lyr][typ][i] for i in sorted_indices]
 
-        fig = make_subplots(
-            rows=2, cols=2,
-            subplot_titles=("Global", "L1", "L2", "L3")
-        )
-
         selected_sorted = self.sorted_asd_cards(selected_asd_cards)
         cards_by_type = {'strip': [], 'wire': []}
         cards_by_layer_type = {
@@ -770,105 +768,74 @@ class TGC_QC_GUI_Plotly(QWidget):
             info = self.pp_channel_mapping.get(card)
             if not info:
                 continue
-            typ = info['type']
-            lyr = info['layer']
-            cards_by_type[typ].append(card)
-            cards_by_layer_type[lyr][typ].append(card)
+            cards_by_type[info['type']].append(card)
+            cards_by_layer_type[info['layer']][info['type']].append(card)
 
         def format_card_list(cards):
-            if not cards:
-                return "none"
-            return ", ".join(cards)
+            return ", ".join(cards) if cards else "none"
 
-        use_log_scale = self.log_scale_button.isChecked()
-        hidden_points_for_log = 0
-        trace_count = 0
+        # Build title string (fixed regardless of log scale)
+        if len(selected_sorted) == len(self.available_asd_cards):
+            selected_title = "all ASD cards"
+        elif len(selected_sorted) <= 4:
+            selected_title = ", ".join(selected_sorted)
+        else:
+            selected_title = f"{len(selected_sorted)} ASD cards"
 
-        for name, series in global_data.items():
-            means, stds = zip(*series)
-            if use_log_scale:
-                means_plot = [mean if mean > 0 else np.nan for mean in means]
-                hidden_points_for_log += sum((not np.isnan(mean)) and (mean <= 0) for mean in means)
-            else:
-                means_plot = means
+        def render(thr=thresholds, gd=global_data, ld=layer_data,
+                   cbt=cards_by_type, cblt=cards_by_layer_type, st=selected_title):
+            use_log = self.log_scale_button.isChecked()
+            fig = make_subplots(rows=2, cols=2,
+                                subplot_titles=("Global", "L1", "L2", "L3"))
+            trace_count = 0
 
-            if not np.any(~np.isnan(np.array(means_plot, dtype=float))):
-                continue
-            fig.add_trace(
-                go.Scatter(
-                    x=thresholds,
-                    y=means_plot,
-                    name=f"{name} (global): {format_card_list(cards_by_type[name])}",
-                    error_y=dict(type='data', array=stds, visible=True)
-                ),
-                row=1, col=1
-            )
-            trace_count += 1
-
-        for lyr in range(3):
-            for typ in ['strip', 'wire']:
-                means, stds = zip(*layer_data[lyr][typ])
-                if use_log_scale:
-                    means_plot = [mean if mean > 0 else np.nan for mean in means]
-                    hidden_points_for_log += sum((not np.isnan(mean)) and (mean <= 0) for mean in means)
-                else:
-                    means_plot = means
-
+            for name, series in gd.items():
+                means, stds = zip(*series)
+                means_plot = [m if m > 0 else np.nan for m in means] if use_log else list(means)
                 if not np.any(~np.isnan(np.array(means_plot, dtype=float))):
                     continue
-                # Map layers to subplot positions: L1->(1,2), L2->(2,1), L3->(2,2)
-                row = 1 + (lyr + 1) // 2
-                col = 1 + (lyr + 1) % 2
-                fig.add_trace(
-                    go.Scatter(
-                        x=thresholds,
-                        y=means_plot,
-                        name=f"{typ} (L{lyr+1}): {format_card_list(cards_by_layer_type[lyr][typ])}",
-                        error_y=dict(type='data', array=stds, visible=True)
-                    ),
-                    row=row, col=col
-                )
+                fig.add_trace(go.Scatter(
+                    x=thr, y=means_plot,
+                    name=f"{name} (global): {format_card_list(cbt[name])}",
+                    error_y=dict(type='data', array=list(stds), visible=True)
+                ), row=1, col=1)
                 trace_count += 1
 
-        if trace_count == 0:
-            QMessageBox.warning(self, "Warning", "No plottable data found for the selected ASD cards.")
-            return
+            for lyr in range(3):
+                for typ in ['strip', 'wire']:
+                    means, stds = zip(*ld[lyr][typ])
+                    means_plot = [m if m > 0 else np.nan for m in means] if use_log else list(means)
+                    if not np.any(~np.isnan(np.array(means_plot, dtype=float))):
+                        continue
+                    # Map layers to subplot positions: L1->(1,2), L2->(2,1), L3->(2,2)
+                    row = 1 + (lyr + 1) // 2
+                    col = 1 + (lyr + 1) % 2
+                    fig.add_trace(go.Scatter(
+                        x=thr, y=means_plot,
+                        name=f"{typ} (L{lyr+1}): {format_card_list(cblt[lyr][typ])}",
+                        error_y=dict(type='data', array=list(stds), visible=True)
+                    ), row=row, col=col)
+                    trace_count += 1
 
-        y_axis_suffix = " [log]" if use_log_scale else ""
-        selected_title_cards = selected_sorted
-        if len(selected_title_cards) == len(self.available_asd_cards):
-            selected_title = "all ASD cards"
-        elif len(selected_title_cards) <= 4:
-            selected_title = ", ".join(selected_title_cards)
-        else:
-            selected_title = f"{len(selected_title_cards)} ASD cards"
-        fig.update_layout(
-            title=f"Threshold Scan: Avg Occupancy vs Threshold{y_axis_suffix} ({selected_title})",
-            height=800,
-            margin=dict(t=50, b=50),
-            showlegend=True
-        )
+            if trace_count == 0:
+                return "<h3>No plottable data for the selected ASD cards.</h3>"
 
-        # Update axes labels for all subplots
-        for row in [1, 2]:
-            for col in [1, 2]:
-                fig.update_xaxes(title_text="Threshold (mV)", row=row, col=col)
-                fig.update_yaxes(title_text="Average Occupancy", row=row, col=col)
-                if use_log_scale:
-                    fig.update_yaxes(type='log', row=row, col=col)
-
-        if use_log_scale and hidden_points_for_log:
-            QMessageBox.information(
-                self,
-                "Log Scale Note",
-                f"{hidden_points_for_log} non-positive points were hidden in log-scale threshold plots."
+            y_suffix = " [log]" if use_log else ""
+            fig.update_layout(
+                title=f"Threshold Scan: Avg Occupancy vs Threshold{y_suffix} ({st})",
+                height=800, margin=dict(t=50, b=50), showlegend=True
             )
+            for r in [1, 2]:
+                for c in [1, 2]:
+                    fig.update_xaxes(title_text="Threshold (mV)", row=r, col=c)
+                    fig.update_yaxes(title_text="Average Occupancy", row=r, col=c)
+                    if use_log:
+                        fig.update_yaxes(type='log', row=r, col=c)
+            return pio.to_html(fig, full_html=True, include_plotlyjs='cdn')
 
-        html = pio.to_html(fig, full_html=True, include_plotlyjs='cdn')
-        tab = QWebEngineView()
-        tab.setHtml(html)
-        self.tabs.addTab(tab, f"Plot {self.tabs.count() + 1}")
-        self.tabs.setCurrentWidget(tab)
+        tab_label = f"Plot {self.tabs.count() + 1}"
+        view = self._add_renderable_tab(render, tab_label)
+        self.tabs.setCurrentWidget(view)
 
 
 if __name__ == "__main__":
