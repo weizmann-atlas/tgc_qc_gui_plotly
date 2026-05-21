@@ -674,7 +674,9 @@ class TGC_QC_GUI_Plotly(QWidget):
                     margin=dict(t=70, b=50)
                 )
                 if d['thresholds']:
-                    fig.update_xaxes(range=[min(d['thresholds']), max(d['thresholds'])])
+                    x_min, x_max = min(d['thresholds']), max(d['thresholds'])
+                    x_pad = max((x_max - x_min) * 0.05, 10)
+                    fig.update_xaxes(range=[x_min - x_pad, x_max + x_pad])
                 if use_log:
                     fig.update_yaxes(type='log')
                 return pio.to_html(fig, full_html=True, include_plotlyjs='cdn')
@@ -746,8 +748,10 @@ class TGC_QC_GUI_Plotly(QWidget):
                     ax.errorbar(thresholds, means_plot, yerr=stds_plot,
                                 marker='o', capsize=4, color='steelblue')
                     if thresholds:
-                        ax.set_xlim(min(thresholds), max(thresholds))
-                    if use_log:
+                        x_min, x_max = min(thresholds), max(thresholds)
+                        x_pad = max((x_max - x_min) * 0.05, 10)
+                        ax.set_xlim(x_min - x_pad, x_max + x_pad)
+                    if use_log and np.any(valid):
                         ax.set_yscale('log')
                     page_title = f"{title}\n{tag} — {subtitle}"
                     if hidden:
@@ -918,10 +922,12 @@ class TGC_QC_GUI_Plotly(QWidget):
                 title=f"Threshold Scan: Avg Occupancy vs Threshold{y_suffix} ({st})",
                 height=800, margin=dict(t=50, b=50), showlegend=True
             )
+            x_min, x_max = min(thr), max(thr)
+            x_pad = max((x_max - x_min) * 0.05, 10)
             for r in [1, 2]:
                 for c in [1, 2]:
                     fig.update_xaxes(title_text="Threshold (mV)",
-                                     range=[min(thr), max(thr)],
+                                     range=[x_min - x_pad, x_max + x_pad],
                                      row=r, col=c)
                     fig.update_yaxes(title_text="Average Occupancy", row=r, col=c)
                     if use_log:
