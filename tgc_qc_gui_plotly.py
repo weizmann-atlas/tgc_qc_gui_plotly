@@ -7,7 +7,8 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QFileDialog, QLabel, QTabWidget, QComboBox, QMessageBox,
     QDialog, QListWidget, QListWidgetItem, QDialogButtonBox,
-    QLineEdit, QFormLayout, QScrollArea, QGroupBox, QSizePolicy
+    QLineEdit, QFormLayout, QScrollArea, QGroupBox, QSizePolicy,
+    QTableWidget, QTableWidgetItem, QHeaderView
 )
 from PyQt5.QtCore import Qt, QStandardPaths
 from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEngineProfile
@@ -69,7 +70,7 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.asd_selection_label.setWordWrap(True)
         self.asd_selection_label.setStyleSheet("font-size: 10px;")
 
-        self.show_mapping_button = QPushButton("Show Mapping")
+        self.show_mapping_button = QPushButton("Edit Mapping")
         self.save_pdf_button = QPushButton("Save PDF")
         self.save_pdf_button.setVisible(False)
         self.switch_tab_button = QPushButton("Next Tab ▶")
@@ -159,12 +160,55 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.label.setText(f"Saving: {save_path}")
 
     def show_mapping_dialog(self):
-        """Display the PP channel mapping information in a dialog."""
-        legend_text = "\n".join([
-            f"{tag}: L{info['layer']}, {info['type']}, {info['channels']}"
-            for tag, info in sorted(self.pp_channel_mapping.items())
-        ])
-        QMessageBox.information(self, "PP Channel Mapping", legend_text)
+        """Open an editable table for the PP channel mapping."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit PP Channel Mapping")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Edit layer, type, and channel label for each PP card:"))
+
+        table = QTableWidget(len(self.available_asd_cards), 4, dialog)
+        table.setHorizontalHeaderLabels(["Tag", "Layer", "Type", "Channels"])
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.verticalHeader().setVisible(False)
+
+        for row, tag in enumerate(self.available_asd_cards):
+            info = self.pp_channel_mapping[tag]
+
+            tag_item = QTableWidgetItem(tag)
+            tag_item.setFlags(Qt.ItemIsEnabled)
+            table.setItem(row, 0, tag_item)
+
+            layer_cb = QComboBox()
+            layer_cb.addItems(["0", "1", "2"])
+            layer_cb.setCurrentText(str(info['layer']))
+            table.setCellWidget(row, 1, layer_cb)
+
+            type_cb = QComboBox()
+            type_cb.addItems(["wire", "strip"])
+            type_cb.setCurrentText(info['type'])
+            table.setCellWidget(row, 2, type_cb)
+
+            table.setItem(row, 3, QTableWidgetItem(info['channels']))
+
+        layout.addWidget(table)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        dialog.resize(480, 400)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        for row, tag in enumerate(self.available_asd_cards):
+            self.pp_channel_mapping[tag]['layer'] = int(table.cellWidget(row, 1).currentText())
+            self.pp_channel_mapping[tag]['type']  = table.cellWidget(row, 2).currentText()
+            ch_item = table.item(row, 3)
+            self.pp_channel_mapping[tag]['channels'] = ch_item.text().strip() if ch_item else ''
+
+        self._replot_all_tabs()
+        self.label.setText("Mapping updated — plots refreshed.")
 
     def switch_plot_tab(self):
         """Switch to the next plot tab, cycling back to the first."""
@@ -603,14 +647,14 @@ class TGC_QC_GUI_Plotly(QWidget):
         for tag in ordered_tags:
             d = self.thr_asd_data[tag]
             title = titles[tag]
-            info = self.pp_channel_mapping.get(tag, {})
-            subtitle = (
-                f"Layer {info.get('layer', '?')}, "
-                f"{info.get('type', '?')}, "
-                f"ch {info.get('channels', '?')}"
-            )
 
-            def render(d=d, title=title, tag=tag, subtitle=subtitle):
+            def render(d=d, title=title, tag=tag):
+                info = self.pp_channel_mapping.get(tag, {})
+                subtitle = (
+                    f"Layer {info.get('layer', '?')}, "
+                    f"{info.get('type', '?')}, "
+                    f"ch {info.get('channels', '?')}"
+                )
                 use_log = self.log_scale_button.isChecked()
                 if use_log:
                     means_plot = [m if m > 0 else None for m in d['means']]
@@ -800,23 +844,8 @@ class TGC_QC_GUI_Plotly(QWidget):
                 layer_data[lyr][typ] = [layer_data[lyr][typ][i] for i in sorted_indices]
 
         selected_sorted = self.sorted_asd_cards(selected_asd_cards)
-        cards_by_type = {'strip': [], 'wire': []}
-        cards_by_layer_type = {
-            0: {'strip': [], 'wire': []},
-            1: {'strip': [], 'wire': []},
-            2: {'strip': [], 'wire': []}
-        }
-        for card in selected_sorted:
-            info = self.pp_channel_mapping.get(card)
-            if not info:
-                continue
-            cards_by_type[info['type']].append(card)
-            cards_by_layer_type[info['layer']][info['type']].append(card)
 
-        def format_card_list(cards):
-            return ", ".join(cards) if cards else "none"
-
-        # Build title string (fixed regardless of log scale)
+        # Build title string (fixed — tag names never change)
         if len(selected_sorted) == len(self.available_asd_cards):
             selected_title = "all ASD cards"
         elif len(selected_sorted) <= 4:
@@ -825,8 +854,26 @@ class TGC_QC_GUI_Plotly(QWidget):
             selected_title = f"{len(selected_sorted)} ASD cards"
 
         def render(thr=thresholds, gd=global_data, ld=layer_data,
-                   cbt=cards_by_type, cblt=cards_by_layer_type, st=selected_title):
+                   ss=selected_sorted, st=selected_title):
             use_log = self.log_scale_button.isChecked()
+
+            # Recompute legend labels from live mapping so edits are reflected
+            cards_by_type = {'strip': [], 'wire': []}
+            cards_by_layer_type = {
+                0: {'strip': [], 'wire': []},
+                1: {'strip': [], 'wire': []},
+                2: {'strip': [], 'wire': []}
+            }
+            for card in ss:
+                info = self.pp_channel_mapping.get(card)
+                if not info:
+                    continue
+                cards_by_type[info['type']].append(card)
+                cards_by_layer_type[info['layer']][info['type']].append(card)
+
+            def format_card_list(cards):
+                return ", ".join(cards) if cards else "none"
+
             fig = make_subplots(rows=2, cols=2,
                                 subplot_titles=("Global", "L1", "L2", "L3"))
             trace_count = 0
@@ -838,7 +885,7 @@ class TGC_QC_GUI_Plotly(QWidget):
                     continue
                 fig.add_trace(go.Scatter(
                     x=thr, y=means_plot,
-                    name=f"{name} (global): {format_card_list(cbt[name])}",
+                    name=f"{name} (global): {format_card_list(cards_by_type[name])}",
                     error_y=dict(type='data', array=list(stds), visible=True)
                 ), row=1, col=1)
                 trace_count += 1
@@ -854,7 +901,7 @@ class TGC_QC_GUI_Plotly(QWidget):
                     col = 1 + (lyr + 1) % 2
                     fig.add_trace(go.Scatter(
                         x=thr, y=means_plot,
-                        name=f"{typ} (L{lyr+1}): {format_card_list(cblt[lyr][typ])}",
+                        name=f"{typ} (L{lyr+1}): {format_card_list(cards_by_layer_type[lyr][typ])}",
                         error_y=dict(type='data', array=list(stds), visible=True)
                     ), row=row, col=col)
                     trace_count += 1
