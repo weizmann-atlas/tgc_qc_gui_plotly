@@ -673,6 +673,8 @@ class TGC_QC_GUI_Plotly(QWidget):
                     xaxis_title="Threshold (mV)", yaxis_title=y_axis_title,
                     margin=dict(t=70, b=50)
                 )
+                if d['thresholds']:
+                    fig.update_xaxes(range=[min(d['thresholds']), max(d['thresholds'])])
                 if use_log:
                     fig.update_yaxes(type='log')
                 return pio.to_html(fig, full_html=True, include_plotlyjs='cdn')
@@ -743,6 +745,8 @@ class TGC_QC_GUI_Plotly(QWidget):
                     fig, ax = plt.subplots(figsize=(10, 5))
                     ax.errorbar(thresholds, means_plot, yerr=stds_plot,
                                 marker='o', capsize=4, color='steelblue')
+                    if thresholds:
+                        ax.set_xlim(min(thresholds), max(thresholds))
                     if use_log:
                         ax.set_yscale('log')
                     page_title = f"{title}\n{tag} — {subtitle}"
@@ -916,7 +920,9 @@ class TGC_QC_GUI_Plotly(QWidget):
             )
             for r in [1, 2]:
                 for c in [1, 2]:
-                    fig.update_xaxes(title_text="Threshold (mV)", row=r, col=c)
+                    fig.update_xaxes(title_text="Threshold (mV)",
+                                     range=[min(thr), max(thr)],
+                                     row=r, col=c)
                     fig.update_yaxes(title_text="Average Occupancy", row=r, col=c)
                     if use_log:
                         fig.update_yaxes(type='log', row=r, col=c)
