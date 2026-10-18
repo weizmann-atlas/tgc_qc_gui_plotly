@@ -1,0 +1,18 @@
+{
+    "PP1A": {"layer": 0, "type": "wire",  "channels": "0–15"},
+    "PP2A": {"layer": 0, "type": "wire",  "channels": "16–31"},
+    "PP3A": {"layer": 2, "type": "wire",  "channels": "0–15"},
+    "PP4A": {"layer": 2, "type": "wire",  "channels": "16–31"},
+    "PP5A": {"layer": 0, "type": "strip", "channels": "0–15"},
+    "PP6A": {"layer": 0, "type": "strip", "channels": "16–31"},
+    "PP1B": {"layer": 1, "type": "wire",  "channels": "0–15"},
+    "PP2B": {"layer": 1, "type": "wire",  "channels": "16–31"},
+    "PP3B": {"layer": 2, "type": "wire",  "channels": "0–15"},
+    "PP4B": {"layer": 2, "type": "wire",  "channels": "16–31"},
+    "PP5B": {"layer": 1, "type": "strip", "channels": "0–15"},
+    "PP6B": {"layer": 1, "type": "strip", "channels": "16–31"},
+    "PP7A": {"layer": 2, "type": "strip", "channels": "0–15"},
+    "PP7B": {"layer": 2, "type": "strip", "channels": "0–15"},
+    "PP8A": {"layer": 2, "type": "strip", "channels": "16–31"},
+    "PP8B": {"layer": 2, "type": "strip", "channels": "16–31"}
+}

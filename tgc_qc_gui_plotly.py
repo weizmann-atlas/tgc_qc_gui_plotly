@@ -27,24 +27,11 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.web_profile = QWebEngineProfile.defaultProfile()
         self.web_profile.downloadRequested.connect(self.handle_download_requested)
 
-        self.pp_channel_mapping = {
-            'PP1A': {'layer': 0, 'type': 'wire',  'channels': '0–15'},
-            'PP2A': {'layer': 0, 'type': 'wire',  'channels': '16–31'},
-            'PP3A': {'layer': 2, 'type': 'wire',  'channels': '0–15'},
-            'PP4A': {'layer': 2, 'type': 'wire',  'channels': '16–31'},
-            'PP5A': {'layer': 0, 'type': 'strip', 'channels': '0–15'},
-            'PP6A': {'layer': 0, 'type': 'strip', 'channels': '16–31'},
-            'PP1B': {'layer': 1, 'type': 'wire',  'channels': '0–15'},
-            'PP2B': {'layer': 1, 'type': 'wire',  'channels': '16–31'},
-            'PP3B': {'layer': 2, 'type': 'wire',  'channels': '0–15'},
-            'PP4B': {'layer': 2, 'type': 'wire',  'channels': '16–31'},
-            'PP5B': {'layer': 1, 'type': 'strip', 'channels': '0–15'},
-            'PP6B': {'layer': 1, 'type': 'strip', 'channels': '16–31'},
-            'PP7A': {'layer': 2, 'type': 'strip', 'channels': '0–15'},
-            'PP7B': {'layer': 2, 'type': 'strip', 'channels': '0–15'},
-            'PP8A': {'layer': 2, 'type': 'strip', 'channels': '16–31'},
-            'PP8B': {'layer': 2, 'type': 'strip', 'channels': '16–31'}
-        }
+        _default_json = os.path.join(os.path.dirname(os.path.abspath(__file__)), "asd_mapping.json")
+        try:
+            self.pp_channel_mapping = self._load_mapping(_default_json)
+        except Exception:
+            self.pp_channel_mapping = self._default_mapping()
         self.available_asd_cards = self.sorted_asd_cards(self.pp_channel_mapping.keys())
         self.selected_asd_cards = set(self.available_asd_cards)
         self.thr_asd_data = {}
@@ -159,6 +146,51 @@ class TGC_QC_GUI_Plotly(QWidget):
         download_item.accept()
         self.label.setText(f"Saving: {save_path}")
 
+    @staticmethod
+    def _default_mapping():
+        return {
+            'PP1A': {'layer': 0, 'type': 'wire',  'channels': '0–15'},
+            'PP2A': {'layer': 0, 'type': 'wire',  'channels': '16–31'},
+            'PP3A': {'layer': 2, 'type': 'wire',  'channels': '0–15'},
+            'PP4A': {'layer': 2, 'type': 'wire',  'channels': '16–31'},
+            'PP5A': {'layer': 0, 'type': 'strip', 'channels': '0–15'},
+            'PP6A': {'layer': 0, 'type': 'strip', 'channels': '16–31'},
+            'PP1B': {'layer': 1, 'type': 'wire',  'channels': '0–15'},
+            'PP2B': {'layer': 1, 'type': 'wire',  'channels': '16–31'},
+            'PP3B': {'layer': 2, 'type': 'wire',  'channels': '0–15'},
+            'PP4B': {'layer': 2, 'type': 'wire',  'channels': '16–31'},
+            'PP5B': {'layer': 1, 'type': 'strip', 'channels': '0–15'},
+            'PP6B': {'layer': 1, 'type': 'strip', 'channels': '16–31'},
+            'PP7A': {'layer': 2, 'type': 'strip', 'channels': '0–15'},
+            'PP7B': {'layer': 2, 'type': 'strip', 'channels': '0–15'},
+            'PP8A': {'layer': 2, 'type': 'strip', 'channels': '16–31'},
+            'PP8B': {'layer': 2, 'type': 'strip', 'channels': '16–31'},
+        }
+
+    @staticmethod
+    def _load_mapping(path):
+        import json
+        with open(path, 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+        mapping = {}
+        for tag, info in raw.items():
+            if not isinstance(info.get('layer'), int) or info['layer'] not in (0, 1, 2):
+                raise ValueError(f"{tag}: 'layer' must be 0, 1, or 2")
+            if info.get('type') not in ('wire', 'strip'):
+                raise ValueError(f"{tag}: 'type' must be 'wire' or 'strip'")
+            mapping[tag] = {
+                'layer':    int(info['layer']),
+                'type':     str(info['type']),
+                'channels': str(info.get('channels', '')),
+            }
+        return mapping
+
+    @staticmethod
+    def _save_mapping(path, mapping):
+        import json
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(mapping, f, indent=4, ensure_ascii=False)
+
     def show_mapping_dialog(self):
         """Open an editable table for the PP channel mapping."""
         dialog = QDialog(self)
@@ -192,12 +224,67 @@ class TGC_QC_GUI_Plotly(QWidget):
 
         layout.addWidget(table)
 
+        def _table_to_dict():
+            d = {}
+            for r, t in enumerate(self.available_asd_cards):
+                ch = table.item(r, 3)
+                d[t] = {
+                    'layer':    int(table.cellWidget(r, 1).currentText()),
+                    'type':     table.cellWidget(r, 2).currentText(),
+                    'channels': ch.text().strip() if ch else '',
+                }
+            return d
+
+        def _populate_table(mapping):
+            for r, t in enumerate(self.available_asd_cards):
+                if t not in mapping:
+                    continue
+                info = mapping[t]
+                table.cellWidget(r, 1).setCurrentText(str(info['layer']))
+                table.cellWidget(r, 2).setCurrentText(info['type'])
+                table.item(r, 3).setText(info['channels'])
+
+        def _on_load():
+            path, _ = QFileDialog.getOpenFileName(
+                dialog, "Load Mapping", "", "JSON Files (*.json);;All Files (*)"
+            )
+            if not path:
+                return
+            try:
+                mapping = self._load_mapping(path)
+            except Exception as e:
+                QMessageBox.warning(dialog, "Load Error", str(e))
+                return
+            _populate_table(mapping)
+
+        def _on_save():
+            path, _ = QFileDialog.getSaveFileName(
+                dialog, "Save Mapping", "asd_mapping.json", "JSON Files (*.json);;All Files (*)"
+            )
+            if not path:
+                return
+            try:
+                self._save_mapping(path, _table_to_dict())
+            except Exception as e:
+                QMessageBox.warning(dialog, "Save Error", str(e))
+                return
+            QMessageBox.information(dialog, "Saved", f"Mapping saved to:\n{path}")
+
+        file_row = QHBoxLayout()
+        load_btn = QPushButton("Load from file…")
+        save_btn = QPushButton("Save to file…")
+        load_btn.clicked.connect(_on_load)
+        save_btn.clicked.connect(_on_save)
+        file_row.addWidget(load_btn)
+        file_row.addWidget(save_btn)
+        layout.addLayout(file_row)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dialog)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
 
-        dialog.resize(480, 400)
+        dialog.resize(480, 430)
         if dialog.exec_() != QDialog.Accepted:
             return
 
