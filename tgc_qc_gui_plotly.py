@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QFileDialog, QLabel, QTabWidget, QComboBox, QMessageBox,
     QDialog, QListWidget, QListWidgetItem, QDialogButtonBox,
-    QLineEdit, QFormLayout, QScrollArea, QGroupBox, QSizePolicy,
+    QGroupBox, QSizePolicy,
     QTableWidget, QTableWidgetItem, QHeaderView
 )
 from PyQt5.QtCore import Qt, QStandardPaths
@@ -35,7 +35,6 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.available_asd_cards = self.sorted_asd_cards(self.pp_channel_mapping.keys())
         self.selected_asd_cards = set(self.available_asd_cards)
         self.thr_asd_data = {}
-        self.thr_asd_titles = {}
         self.tab_renderers = {}
 
         # ── Widgets ────────────────────────────────────────────────────────────
@@ -407,36 +406,6 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.selected_asd_cards = selected_cards
         self.update_asd_selection_label()
 
-    def _ask_asd_titles(self, tags):
-        """Show a dialog to set a custom title for each ASD card. Returns {tag: title} or None on cancel."""
-        dialog = QDialog(self)
-        dialog.setWindowTitle("ASD Card Titles")
-        outer_layout = QVBoxLayout(dialog)
-        outer_layout.addWidget(QLabel("Enter a title for each ASD card (used in charts and PDF):"))
-
-        form_widget = QWidget()
-        form_layout = QFormLayout(form_widget)
-        edits = {}
-        for tag in tags:
-            edit = QLineEdit(tag)
-            form_layout.addRow(tag, edit)
-            edits[tag] = edit
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(form_widget)
-        scroll.setMinimumHeight(min(300, 40 * len(tags) + 20))
-        outer_layout.addWidget(scroll)
-
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dialog)
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
-        outer_layout.addWidget(button_box)
-
-        if dialog.exec_() != QDialog.Accepted:
-            return None
-        return {tag: edits[tag].text().strip() or tag for tag in tags}
-
     def _add_renderable_tab(self, render_func, label):
         view = QWebEngineView()
         view.setHtml(render_func())
@@ -712,10 +681,6 @@ class TGC_QC_GUI_Plotly(QWidget):
             QMessageBox.warning(self, "Warning", "No valid threshold data found.")
             return
 
-        titles = self._ask_asd_titles(ordered_tags)
-        if titles is None:
-            return
-
         for tag in ordered_tags:
             per_card_data[tag].sort(key=lambda t: t[0])
 
@@ -727,13 +692,12 @@ class TGC_QC_GUI_Plotly(QWidget):
             }
             for tag in ordered_tags
         }
-        self.thr_asd_titles = titles
 
         first_new_index = self.tabs.count()
 
         for tag in ordered_tags:
             d = self.thr_asd_data[tag]
-            title = titles[tag]
+            title = tag
 
             def render(d=d, title=title, tag=tag):
                 info = self.pp_channel_mapping.get(tag, {})
@@ -807,7 +771,7 @@ class TGC_QC_GUI_Plotly(QWidget):
             with PdfPages(save_path) as pdf:
                 for tag in self.sorted_asd_cards(self.thr_asd_data.keys()):
                     d = self.thr_asd_data[tag]
-                    title = self.thr_asd_titles.get(tag, tag)
+                    title = tag
                     info = self.pp_channel_mapping.get(tag, {})
                     subtitle = (
                         f"Layer {info.get('layer', '?')}, "
