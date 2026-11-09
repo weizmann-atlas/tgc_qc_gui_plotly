@@ -202,8 +202,8 @@ class TGC_QC_GUI_Plotly(QWidget):
         for tag, info in entries.items():
             if not isinstance(info.get('layer'), int) or info['layer'] < 0:
                 raise ValueError(f"{tag}: 'layer' must be a non-negative integer")
-            if info.get('type') not in ('wire', 'strip'):
-                raise ValueError(f"{tag}: 'type' must be 'wire' or 'strip'")
+            if info.get('type') not in ('wire', 'strip', 'disconnected'):
+                raise ValueError(f"{tag}: 'type' must be 'wire', 'strip', or 'disconnected'")
             mapping[tag] = {
                 'layer':    int(info['layer']),
                 'type':     str(info['type']),
@@ -275,7 +275,7 @@ class TGC_QC_GUI_Plotly(QWidget):
             table.setCellWidget(row, 2, layer_cb)
 
             type_cb = QComboBox()
-            type_cb.addItems(["wire", "strip"])
+            type_cb.addItems(["wire", "strip", "disconnected"])
             type_cb.setCurrentText(typ)
             table.setCellWidget(row, 3, type_cb)
 
@@ -383,6 +383,7 @@ class TGC_QC_GUI_Plotly(QWidget):
                  table.cellWidget(r, 3).currentText())
                 for r in range(table.rowCount())
                 if table.cellWidget(r, 2) and table.cellWidget(r, 3)
+                and table.cellWidget(r, 3).currentText() != 'disconnected'
             )
             n_wire  = wire_spin.value()
             n_strip = strip_spin.value()
@@ -991,6 +992,8 @@ class TGC_QC_GUI_Plotly(QWidget):
                 if tag not in selected_asd_cards:
                     continue
                 info = self.pp_channel_mapping[tag]
+                if info['type'] not in ('wire', 'strip'):
+                    continue
                 occs = [channel_vals[0] for channel_vals in values]
                 layer_vals[info['layer']][info['type']].extend(occs)
                 if info['type'] == 'strip':
