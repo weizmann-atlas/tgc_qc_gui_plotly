@@ -220,8 +220,6 @@ class TGC_QC_GUI_Plotly(QWidget):
 
     def show_mapping_dialog(self):
         """Open an editable table for the PP channel mapping."""
-        from collections import defaultdict
-
         dialog = QDialog(self)
         dialog.setWindowTitle("Edit PP Channel Mapping")
         layout = QVBoxLayout(dialog)
@@ -315,37 +313,15 @@ class TGC_QC_GUI_Plotly(QWidget):
             return d
 
         def _regenerate():
-            n_layers = layers_spin.value()
-            n_wire   = wire_spin.value()
-            n_strip  = strip_spin.value()
-            current  = _get_current_mapping()
-
-            groups = defaultdict(list)
-            for tag, info in current.items():
-                groups[(info['layer'], info['type'])].append(
-                    (tag, info.get('label', ''), info.get('channels', ''))
-                )
-
-            existing_tags = set(current)
-            pp_pool = [f'PP{n}{s}' for s in ('A', 'B', 'C', 'D')
-                       for n in range(1, 17)
-                       if f'PP{n}{s}' not in existing_tags]
-            pool_iter = iter(pp_pool)
-
-            lopts = _layer_opts(n_layers)
-            table.setRowCount(n_layers * (n_wire + n_strip))
-            row = 0
-            for l in range(n_layers):
-                for typ, count in [('wire', n_wire), ('strip', n_strip)]:
-                    grp = groups.get((l, typ), [])
-                    for idx in range(count):
-                        if idx < len(grp):
-                            tag, lbl, ch = grp[idx]
-                        else:
-                            tag = next(pool_iter, f'NEW_{row}')
-                            lbl, ch = '', ''
-                        _set_row(row, tag, lbl, l, typ, ch, lopts)
-                        row += 1
+            lopts = _layer_opts(layers_spin.value())
+            for r in range(table.rowCount()):
+                cb = table.cellWidget(r, 2)
+                if cb is None:
+                    continue
+                current_val = cb.currentText()
+                cb.clear()
+                cb.addItems(lopts)
+                cb.setCurrentText(current_val)
 
         regen_btn.clicked.connect(_regenerate)
         _populate_from_mapping(self.pp_channel_mapping)
@@ -393,8 +369,42 @@ class TGC_QC_GUI_Plotly(QWidget):
         file_row.addWidget(save_btn)
         layout.addLayout(file_row)
 
+        def _on_ok():
+            from collections import Counter
+            issues = []
+
+            tags = [table.item(r, 0).text().strip()
+                    for r in range(table.rowCount()) if table.item(r, 0)]
+            seen, dups = set(), set()
+            for t in tags:
+                (dups if t in seen else seen).add(t)
+            if dups:
+                issues.append("Duplicate PP tags: " + ", ".join(sorted(dups)))
+
+            counts = Counter(
+                (int(table.cellWidget(r, 2).currentText()),
+                 table.cellWidget(r, 3).currentText())
+                for r in range(table.rowCount())
+                if table.cellWidget(r, 2) and table.cellWidget(r, 3)
+            )
+            n_wire  = wire_spin.value()
+            n_strip = strip_spin.value()
+            for (layer, typ), cnt in sorted(counts.items()):
+                limit = n_wire if typ == 'wire' else n_strip
+                if cnt > limit:
+                    issues.append(
+                        f"Layer {layer}, {typ}: {cnt} entries but {typ}/layer = {limit}"
+                    )
+
+            if issues:
+                QMessageBox.warning(dialog, "Mapping conflict",
+                                    "Fix the following issues before saving:\n\n"
+                                    + "\n".join(issues))
+                return
+            dialog.accept()
+
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dialog)
-        buttons.accepted.connect(dialog.accept)
+        buttons.accepted.connect(_on_ok)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
 
