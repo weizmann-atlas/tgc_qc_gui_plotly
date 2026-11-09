@@ -273,8 +273,16 @@ class TGC_QC_GUI_Plotly(QWidget):
             table.setCellWidget(row, 2, layer_cb)
 
             type_cb = QComboBox()
-            type_cb.addItems(["wire", "strip", "disconnected"])
-            type_cb.setCurrentText(typ)
+            m = re.fullmatch(r"PP(\d+)[A-Z]", tag)
+            pp_num = int(m.group(1)) if m else None
+            if pp_num is not None and 1 <= pp_num <= 4:
+                type_opts = ["wire", "disconnected"]
+            elif pp_num is not None and 5 <= pp_num <= 8:
+                type_opts = ["strip", "disconnected"]
+            else:
+                type_opts = ["wire", "strip", "disconnected"]
+            type_cb.addItems(type_opts)
+            type_cb.setCurrentText(typ if typ in type_opts else type_opts[0])
             table.setCellWidget(row, 3, type_cb)
 
             table.setItem(row, 4, QTableWidgetItem(channels))
