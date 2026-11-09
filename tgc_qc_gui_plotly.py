@@ -738,11 +738,17 @@ class TGC_QC_GUI_Plotly(QWidget):
         heatmap_data = []
 
         for tag, values in self.iter_pp_half_blocks(data):
+            if tag not in self.selected_asd_cards:
+                continue
+            info = self.pp_channel_mapping.get(tag, {})
+            if info.get('type') == 'disconnected':
+                continue
             row = [channel_vals[0] for channel_vals in values]
             if len(row) != 16:
                 continue
+            lbl = info.get('label', '').strip()
+            valid_tags.append(f"{lbl} ({tag})" if lbl else tag)
             heatmap_data.append(row)
-            valid_tags.append(tag)
 
         if not heatmap_data:
             QMessageBox.warning(self, "Warning", "No valid data found in file.")
