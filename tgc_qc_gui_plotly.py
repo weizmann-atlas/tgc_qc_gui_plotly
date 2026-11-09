@@ -247,8 +247,6 @@ class TGC_QC_GUI_Plotly(QWidget):
         strip_spin.setMaximumWidth(55)
         cfg_row.addWidget(strip_spin)
 
-        regen_btn = QPushButton("Regenerate")
-        cfg_row.addWidget(regen_btn)
         cfg_row.addStretch()
         layout.addLayout(cfg_row)
 
@@ -320,7 +318,7 @@ class TGC_QC_GUI_Plotly(QWidget):
                 cb.addItems(lopts)
                 cb.setCurrentText(current_val)
 
-        regen_btn.clicked.connect(_regenerate)
+        layers_spin.valueChanged.connect(_regenerate)
         _populate_from_mapping(self.pp_channel_mapping)
 
         def _on_load():
