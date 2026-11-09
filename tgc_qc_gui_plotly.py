@@ -282,11 +282,8 @@ class TGC_QC_GUI_Plotly(QWidget):
             table.setItem(row, 4, QTableWidgetItem(channels))
 
         def _populate_from_mapping(mapping):
-            """Fill table with all entries from mapping sorted by (layer, type, tag)."""
-            entries = sorted(
-                mapping.items(),
-                key=lambda x: (x[1].get('layer', 0), x[1].get('type', ''), x[0])
-            )
+            """Fill table with all entries from mapping sorted as PP1A, PP1B, PP2A, …"""
+            entries = [(tag, mapping[tag]) for tag in self.sorted_asd_cards(mapping.keys())]
             max_layer = max((info.get('layer', 0) for _, info in entries), default=0)
             n_l = max(layers_spin.value(), max_layer + 1)
             lopts = _layer_opts(n_l)
