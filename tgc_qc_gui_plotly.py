@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
     QFileDialog, QLabel, QTabWidget, QComboBox, QMessageBox,
     QDialog, QListWidget, QListWidgetItem, QDialogButtonBox,
     QGroupBox, QSizePolicy,
-    QTableWidget, QTableWidgetItem, QHeaderView
+    QTableWidget, QTableWidgetItem, QHeaderView, QSpinBox
 )
 from PyQt5.QtCore import Qt, QStandardPaths
 from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEngineProfile
@@ -29,8 +29,9 @@ class TGC_QC_GUI_Plotly(QWidget):
 
         _default_json = os.path.join(os.path.dirname(os.path.abspath(__file__)), "asd_mapping.json")
         try:
-            self.pp_channel_mapping = self._load_mapping(_default_json)
+            self._mapping_config, self.pp_channel_mapping = self._load_mapping(_default_json)
         except Exception:
+            self._mapping_config = {'n_layers': 3, 'wire_per_layer': 2, 'strip_per_layer': 2}
             self.pp_channel_mapping = self._default_mapping()
         self.available_asd_cards = self.sorted_asd_cards(self.pp_channel_mapping.keys())
         self.selected_asd_cards = set(self.available_asd_cards)
@@ -148,22 +149,22 @@ class TGC_QC_GUI_Plotly(QWidget):
     @staticmethod
     def _default_mapping():
         return {
-            'PP1A': {'layer': 0, 'type': 'wire',  'channels': '0–15'},
-            'PP2A': {'layer': 0, 'type': 'wire',  'channels': '16–31'},
-            'PP3A': {'layer': 2, 'type': 'wire',  'channels': '0–15'},
-            'PP4A': {'layer': 2, 'type': 'wire',  'channels': '16–31'},
-            'PP5A': {'layer': 0, 'type': 'strip', 'channels': '0–15'},
-            'PP6A': {'layer': 0, 'type': 'strip', 'channels': '16–31'},
-            'PP1B': {'layer': 1, 'type': 'wire',  'channels': '0–15'},
-            'PP2B': {'layer': 1, 'type': 'wire',  'channels': '16–31'},
-            'PP3B': {'layer': 2, 'type': 'wire',  'channels': '0–15'},
-            'PP4B': {'layer': 2, 'type': 'wire',  'channels': '16–31'},
-            'PP5B': {'layer': 1, 'type': 'strip', 'channels': '0–15'},
-            'PP6B': {'layer': 1, 'type': 'strip', 'channels': '16–31'},
-            'PP7A': {'layer': 2, 'type': 'strip', 'channels': '0–15'},
-            'PP7B': {'layer': 2, 'type': 'strip', 'channels': '0–15'},
-            'PP8A': {'layer': 2, 'type': 'strip', 'channels': '16–31'},
-            'PP8B': {'layer': 2, 'type': 'strip', 'channels': '16–31'},
+            'PP1A': {'layer': 0, 'type': 'wire',  'channels': '0–15',  'label': ''},
+            'PP2A': {'layer': 0, 'type': 'wire',  'channels': '16–31', 'label': ''},
+            'PP3A': {'layer': 2, 'type': 'wire',  'channels': '0–15',  'label': ''},
+            'PP4A': {'layer': 2, 'type': 'wire',  'channels': '16–31', 'label': ''},
+            'PP5A': {'layer': 0, 'type': 'strip', 'channels': '0–15',  'label': ''},
+            'PP6A': {'layer': 0, 'type': 'strip', 'channels': '16–31', 'label': ''},
+            'PP1B': {'layer': 1, 'type': 'wire',  'channels': '0–15',  'label': ''},
+            'PP2B': {'layer': 1, 'type': 'wire',  'channels': '16–31', 'label': ''},
+            'PP3B': {'layer': 2, 'type': 'wire',  'channels': '0–15',  'label': ''},
+            'PP4B': {'layer': 2, 'type': 'wire',  'channels': '16–31', 'label': ''},
+            'PP5B': {'layer': 1, 'type': 'strip', 'channels': '0–15',  'label': ''},
+            'PP6B': {'layer': 1, 'type': 'strip', 'channels': '16–31', 'label': ''},
+            'PP7A': {'layer': 2, 'type': 'strip', 'channels': '0–15',  'label': ''},
+            'PP7B': {'layer': 2, 'type': 'strip', 'channels': '0–15',  'label': ''},
+            'PP8A': {'layer': 2, 'type': 'strip', 'channels': '16–31', 'label': ''},
+            'PP8B': {'layer': 2, 'type': 'strip', 'channels': '16–31', 'label': ''},
         }
 
     @staticmethod
@@ -171,77 +172,183 @@ class TGC_QC_GUI_Plotly(QWidget):
         import json
         with open(path, 'r', encoding='utf-8') as f:
             raw = json.load(f)
+
+        if 'config' in raw and 'entries' in raw:
+            cfg_raw = raw['config']
+            entries = raw['entries']
+        else:
+            entries = raw
+            layers = {int(v['layer']) for v in entries.values() if isinstance(v.get('layer'), int)}
+            n_l = max(layers) + 1 if layers else 1
+            wire_counts = [sum(1 for v in entries.values()
+                               if isinstance(v.get('layer'), int) and v['layer'] == l and v.get('type') == 'wire')
+                           for l in range(n_l)]
+            strip_counts = [sum(1 for v in entries.values()
+                                if isinstance(v.get('layer'), int) and v['layer'] == l and v.get('type') == 'strip')
+                            for l in range(n_l)]
+            cfg_raw = {
+                'n_layers':        n_l,
+                'wire_per_layer':  max(wire_counts) if wire_counts else 1,
+                'strip_per_layer': max(strip_counts) if strip_counts else 1,
+            }
+
+        config = {
+            'n_layers':        int(cfg_raw.get('n_layers', 3)),
+            'wire_per_layer':  int(cfg_raw.get('wire_per_layer', 2)),
+            'strip_per_layer': int(cfg_raw.get('strip_per_layer', 2)),
+        }
+
         mapping = {}
-        for tag, info in raw.items():
-            if not isinstance(info.get('layer'), int) or info['layer'] not in (0, 1, 2):
-                raise ValueError(f"{tag}: 'layer' must be 0, 1, or 2")
+        for tag, info in entries.items():
+            if not isinstance(info.get('layer'), int) or info['layer'] < 0:
+                raise ValueError(f"{tag}: 'layer' must be a non-negative integer")
             if info.get('type') not in ('wire', 'strip'):
                 raise ValueError(f"{tag}: 'type' must be 'wire' or 'strip'")
             mapping[tag] = {
                 'layer':    int(info['layer']),
                 'type':     str(info['type']),
                 'channels': str(info.get('channels', '')),
+                'label':    str(info.get('label', '')),
             }
-        return mapping
+        return config, mapping
 
     @staticmethod
-    def _save_mapping(path, mapping):
+    def _save_mapping(path, config, mapping):
         import json
         with open(path, 'w', encoding='utf-8') as f:
-            json.dump(mapping, f, indent=4, ensure_ascii=False)
+            json.dump({'config': config, 'entries': mapping}, f, indent=4, ensure_ascii=False)
 
     def show_mapping_dialog(self):
         """Open an editable table for the PP channel mapping."""
+        from collections import defaultdict
+
         dialog = QDialog(self)
         dialog.setWindowTitle("Edit PP Channel Mapping")
         layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel("Edit layer, type, and channel label for each PP card:"))
 
-        table = QTableWidget(len(self.available_asd_cards), 4, dialog)
-        table.setHorizontalHeaderLabels(["Tag", "Layer", "Type", "Channels"])
+        # ── Config row ─────────────────────────────────────────────────────────
+        cfg_row = QHBoxLayout()
+        cfg_row.addWidget(QLabel("Layers:"))
+        layers_spin = QSpinBox()
+        layers_spin.setRange(1, 4)
+        layers_spin.setValue(self._mapping_config['n_layers'])
+        layers_spin.setMaximumWidth(55)
+        cfg_row.addWidget(layers_spin)
+
+        cfg_row.addWidget(QLabel("Wire/layer:"))
+        wire_spin = QSpinBox()
+        wire_spin.setRange(1, 16)
+        wire_spin.setValue(self._mapping_config['wire_per_layer'])
+        wire_spin.setMaximumWidth(55)
+        cfg_row.addWidget(wire_spin)
+
+        cfg_row.addWidget(QLabel("Strip/layer:"))
+        strip_spin = QSpinBox()
+        strip_spin.setRange(0, 16)
+        strip_spin.setValue(self._mapping_config['strip_per_layer'])
+        strip_spin.setMaximumWidth(55)
+        cfg_row.addWidget(strip_spin)
+
+        regen_btn = QPushButton("Regenerate")
+        cfg_row.addWidget(regen_btn)
+        cfg_row.addStretch()
+        layout.addLayout(cfg_row)
+
+        # ── Table ──────────────────────────────────────────────────────────────
+        table = QTableWidget(0, 5, dialog)
+        table.setHorizontalHeaderLabels(["Tag", "Label", "Layer", "Type", "Channels"])
         table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         table.verticalHeader().setVisible(False)
+        layout.addWidget(table)
 
-        for row, tag in enumerate(self.available_asd_cards):
-            info = self.pp_channel_mapping[tag]
+        def _layer_opts(n_layers):
+            return [str(l) for l in range(n_layers)]
 
+        def _set_row(row, tag, lbl, layer, typ, channels, lopts):
             tag_item = QTableWidgetItem(tag)
             tag_item.setFlags(Qt.ItemIsEnabled)
             table.setItem(row, 0, tag_item)
 
+            table.setItem(row, 1, QTableWidgetItem(lbl))
+
             layer_cb = QComboBox()
-            layer_cb.addItems(["0", "1", "2"])
-            layer_cb.setCurrentText(str(info['layer']))
-            table.setCellWidget(row, 1, layer_cb)
+            layer_cb.addItems(lopts)
+            layer_cb.setCurrentText(str(layer))
+            table.setCellWidget(row, 2, layer_cb)
 
             type_cb = QComboBox()
             type_cb.addItems(["wire", "strip"])
-            type_cb.setCurrentText(info['type'])
-            table.setCellWidget(row, 2, type_cb)
+            type_cb.setCurrentText(typ)
+            table.setCellWidget(row, 3, type_cb)
 
-            table.setItem(row, 3, QTableWidgetItem(info['channels']))
+            table.setItem(row, 4, QTableWidgetItem(channels))
 
-        layout.addWidget(table)
+        def _populate_from_mapping(mapping):
+            """Fill table with all entries from mapping sorted by (layer, type, tag)."""
+            entries = sorted(
+                mapping.items(),
+                key=lambda x: (x[1].get('layer', 0), x[1].get('type', ''), x[0])
+            )
+            max_layer = max((info.get('layer', 0) for _, info in entries), default=0)
+            n_l = max(layers_spin.value(), max_layer + 1)
+            lopts = _layer_opts(n_l)
+            table.setRowCount(len(entries))
+            for r, (tag, info) in enumerate(entries):
+                _set_row(r, tag, info.get('label', ''), info.get('layer', 0),
+                         info.get('type', 'wire'), info.get('channels', ''), lopts)
 
-        def _table_to_dict():
+        def _get_current_mapping():
             d = {}
-            for r, t in enumerate(self.available_asd_cards):
-                ch = table.item(r, 3)
-                d[t] = {
-                    'layer':    int(table.cellWidget(r, 1).currentText()),
-                    'type':     table.cellWidget(r, 2).currentText(),
-                    'channels': ch.text().strip() if ch else '',
+            for r in range(table.rowCount()):
+                tag_item = table.item(r, 0)
+                tag = tag_item.text().strip() if tag_item else ''
+                if not tag:
+                    continue
+                lbl_item = table.item(r, 1)
+                ch_item  = table.item(r, 4)
+                d[tag] = {
+                    'layer':    int(table.cellWidget(r, 2).currentText()),
+                    'type':     table.cellWidget(r, 3).currentText(),
+                    'channels': ch_item.text().strip() if ch_item else '',
+                    'label':    lbl_item.text().strip() if lbl_item else '',
                 }
             return d
 
-        def _populate_table(mapping):
-            for r, t in enumerate(self.available_asd_cards):
-                if t not in mapping:
-                    continue
-                info = mapping[t]
-                table.cellWidget(r, 1).setCurrentText(str(info['layer']))
-                table.cellWidget(r, 2).setCurrentText(info['type'])
-                table.item(r, 3).setText(info['channels'])
+        def _regenerate():
+            n_layers = layers_spin.value()
+            n_wire   = wire_spin.value()
+            n_strip  = strip_spin.value()
+            current  = _get_current_mapping()
+
+            groups = defaultdict(list)
+            for tag, info in current.items():
+                groups[(info['layer'], info['type'])].append(
+                    (tag, info.get('label', ''), info.get('channels', ''))
+                )
+
+            existing_tags = set(current)
+            pp_pool = [f'PP{n}{s}' for s in ('A', 'B', 'C', 'D')
+                       for n in range(1, 17)
+                       if f'PP{n}{s}' not in existing_tags]
+            pool_iter = iter(pp_pool)
+
+            lopts = _layer_opts(n_layers)
+            table.setRowCount(n_layers * (n_wire + n_strip))
+            row = 0
+            for l in range(n_layers):
+                for typ, count in [('wire', n_wire), ('strip', n_strip)]:
+                    grp = groups.get((l, typ), [])
+                    for idx in range(count):
+                        if idx < len(grp):
+                            tag, lbl, ch = grp[idx]
+                        else:
+                            tag = next(pool_iter, f'NEW_{row}')
+                            lbl, ch = '', ''
+                        _set_row(row, tag, lbl, l, typ, ch, lopts)
+                        row += 1
+
+        regen_btn.clicked.connect(_regenerate)
+        _populate_from_mapping(self.pp_channel_mapping)
 
         def _on_load():
             path, _ = QFileDialog.getOpenFileName(
@@ -250,11 +357,14 @@ class TGC_QC_GUI_Plotly(QWidget):
             if not path:
                 return
             try:
-                mapping = self._load_mapping(path)
+                cfg, mapping = self._load_mapping(path)
             except Exception as e:
                 QMessageBox.warning(dialog, "Load Error", str(e))
                 return
-            _populate_table(mapping)
+            layers_spin.setValue(cfg['n_layers'])
+            wire_spin.setValue(cfg['wire_per_layer'])
+            strip_spin.setValue(cfg['strip_per_layer'])
+            _populate_from_mapping(mapping)
 
         def _on_save():
             path, _ = QFileDialog.getSaveFileName(
@@ -262,8 +372,13 @@ class TGC_QC_GUI_Plotly(QWidget):
             )
             if not path:
                 return
+            cfg = {
+                'n_layers':        layers_spin.value(),
+                'wire_per_layer':  wire_spin.value(),
+                'strip_per_layer': strip_spin.value(),
+            }
             try:
-                self._save_mapping(path, _table_to_dict())
+                self._save_mapping(path, cfg, _get_current_mapping())
             except Exception as e:
                 QMessageBox.warning(dialog, "Save Error", str(e))
                 return
@@ -283,16 +398,21 @@ class TGC_QC_GUI_Plotly(QWidget):
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
 
-        dialog.resize(480, 430)
+        dialog.resize(600, 500)
         if dialog.exec_() != QDialog.Accepted:
             return
 
-        for row, tag in enumerate(self.available_asd_cards):
-            self.pp_channel_mapping[tag]['layer'] = int(table.cellWidget(row, 1).currentText())
-            self.pp_channel_mapping[tag]['type']  = table.cellWidget(row, 2).currentText()
-            ch_item = table.item(row, 3)
-            self.pp_channel_mapping[tag]['channels'] = ch_item.text().strip() if ch_item else ''
-
+        self._mapping_config = {
+            'n_layers':        layers_spin.value(),
+            'wire_per_layer':  wire_spin.value(),
+            'strip_per_layer': strip_spin.value(),
+        }
+        self.pp_channel_mapping = _get_current_mapping()
+        self.available_asd_cards = self.sorted_asd_cards(self.pp_channel_mapping.keys())
+        self.selected_asd_cards &= set(self.available_asd_cards)
+        if not self.selected_asd_cards:
+            self.selected_asd_cards = set(self.available_asd_cards)
+        self.update_asd_selection_label()
         self._replot_all_tabs()
         self.label.setText("Mapping updated — plots refreshed.")
 
@@ -697,10 +817,14 @@ class TGC_QC_GUI_Plotly(QWidget):
 
         for tag in ordered_tags:
             d = self.thr_asd_data[tag]
-            title = tag
+            info0 = self.pp_channel_mapping.get(tag, {})
+            lbl0 = info0.get('label', '').strip()
+            tab_label = f"{lbl0} ({tag})" if lbl0 else tag
 
-            def render(d=d, title=title, tag=tag):
+            def render(d=d, tag=tag):
                 info = self.pp_channel_mapping.get(tag, {})
+                lbl = info.get('label', '').strip()
+                display_name = f"{lbl} ({tag})" if lbl else tag
                 subtitle = (
                     f"Layer {info.get('layer', '?')}, "
                     f"{info.get('type', '?')}, "
@@ -720,7 +844,7 @@ class TGC_QC_GUI_Plotly(QWidget):
                     marker=dict(color='steelblue')
                 ))
                 fig.update_layout(
-                    title=f"{title}<br><sup>{tag} — {subtitle}</sup>",
+                    title=f"{display_name}<br><sup>{subtitle}</sup>",
                     xaxis_title="Threshold (mV)", yaxis_title=y_axis_title,
                     margin=dict(t=70, b=50)
                 )
@@ -732,7 +856,7 @@ class TGC_QC_GUI_Plotly(QWidget):
                     fig.update_yaxes(type='log')
                 return pio.to_html(fig, full_html=True, include_plotlyjs='cdn')
 
-            self._add_renderable_tab(render, title)
+            self._add_renderable_tab(render, tab_label)
 
         self.tabs.setCurrentIndex(first_new_index)
 
@@ -771,8 +895,9 @@ class TGC_QC_GUI_Plotly(QWidget):
             with PdfPages(save_path) as pdf:
                 for tag in self.sorted_asd_cards(self.thr_asd_data.keys()):
                     d = self.thr_asd_data[tag]
-                    title = tag
                     info = self.pp_channel_mapping.get(tag, {})
+                    lbl = info.get('label', '').strip()
+                    display_name = f"{lbl} ({tag})" if lbl else tag
                     subtitle = (
                         f"Layer {info.get('layer', '?')}, "
                         f"{info.get('type', '?')}, "
@@ -804,7 +929,7 @@ class TGC_QC_GUI_Plotly(QWidget):
                         ax.set_xlim(x_min - x_pad, x_max + x_pad)
                     if use_log and np.any(valid):
                         ax.set_yscale('log')
-                    page_title = f"{title}\n{tag} — {subtitle}"
+                    page_title = f"{display_name}\n{subtitle}"
                     if hidden:
                         page_title += f"\n({hidden} non-positive point(s) hidden in log scale)"
                     ax.set_title(page_title, fontsize=11)

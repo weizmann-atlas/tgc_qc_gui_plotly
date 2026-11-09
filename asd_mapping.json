@@ -1,18 +1,25 @@
 {
-    "PP1A": {"layer": 0, "type": "wire",  "channels": "0–15"},
-    "PP2A": {"layer": 0, "type": "wire",  "channels": "16–31"},
-    "PP3A": {"layer": 2, "type": "wire",  "channels": "0–15"},
-    "PP4A": {"layer": 2, "type": "wire",  "channels": "16–31"},
-    "PP5A": {"layer": 0, "type": "strip", "channels": "0–15"},
-    "PP6A": {"layer": 0, "type": "strip", "channels": "16–31"},
-    "PP1B": {"layer": 1, "type": "wire",  "channels": "0–15"},
-    "PP2B": {"layer": 1, "type": "wire",  "channels": "16–31"},
-    "PP3B": {"layer": 2, "type": "wire",  "channels": "0–15"},
-    "PP4B": {"layer": 2, "type": "wire",  "channels": "16–31"},
-    "PP5B": {"layer": 1, "type": "strip", "channels": "0–15"},
-    "PP6B": {"layer": 1, "type": "strip", "channels": "16–31"},
-    "PP7A": {"layer": 2, "type": "strip", "channels": "0–15"},
-    "PP7B": {"layer": 2, "type": "strip", "channels": "0–15"},
-    "PP8A": {"layer": 2, "type": "strip", "channels": "16–31"},
-    "PP8B": {"layer": 2, "type": "strip", "channels": "16–31"}
+    "config": {
+        "n_layers": 3,
+        "wire_per_layer": 4,
+        "strip_per_layer": 4
+    },
+    "entries": {
+        "PP1A": {"layer": 0, "type": "wire",  "channels": "0–15",  "label": ""},
+        "PP2A": {"layer": 0, "type": "wire",  "channels": "16–31", "label": ""},
+        "PP3A": {"layer": 2, "type": "wire",  "channels": "0–15",  "label": ""},
+        "PP4A": {"layer": 2, "type": "wire",  "channels": "16–31", "label": ""},
+        "PP5A": {"layer": 0, "type": "strip", "channels": "0–15",  "label": ""},
+        "PP6A": {"layer": 0, "type": "strip", "channels": "16–31", "label": ""},
+        "PP1B": {"layer": 1, "type": "wire",  "channels": "0–15",  "label": ""},
+        "PP2B": {"layer": 1, "type": "wire",  "channels": "16–31", "label": ""},
+        "PP3B": {"layer": 2, "type": "wire",  "channels": "0–15",  "label": ""},
+        "PP4B": {"layer": 2, "type": "wire",  "channels": "16–31", "label": ""},
+        "PP5B": {"layer": 1, "type": "strip", "channels": "0–15",  "label": ""},
+        "PP6B": {"layer": 1, "type": "strip", "channels": "16–31", "label": ""},
+        "PP7A": {"layer": 2, "type": "strip", "channels": "0–15",  "label": ""},
+        "PP7B": {"layer": 2, "type": "strip", "channels": "0–15",  "label": ""},
+        "PP8A": {"layer": 2, "type": "strip", "channels": "16–31", "label": ""},
+        "PP8B": {"layer": 2, "type": "strip", "channels": "16–31", "label": ""}
+    }
 }
