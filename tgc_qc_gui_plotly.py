@@ -61,9 +61,11 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.save_pdf_button = QPushButton("Save PDF")
         self.save_pdf_button.setVisible(False)
         self.switch_tab_button = QPushButton("Next Tab ▶")
+        self.convert_button = QPushButton("Convert txt → ROOT")
 
         # ── Signals ────────────────────────────────────────────────────────────
         self.save_pdf_button.clicked.connect(self.save_thr_asd_pdf)
+        self.convert_button.clicked.connect(self.convert_txt_to_root)
         self.load_button.clicked.connect(self.load_file)
         self.switch_tab_button.clicked.connect(self.switch_plot_tab)
         self.show_mapping_button.clicked.connect(self.show_mapping_dialog)
@@ -101,6 +103,7 @@ class TGC_QC_GUI_Plotly(QWidget):
         tools_group = QGroupBox("Tools")
         tg = QVBoxLayout(tools_group)
         tg.addWidget(self.show_mapping_button)
+        tg.addWidget(self.convert_button)
         tg.addWidget(self.save_pdf_button)
         tg.addWidget(self.switch_tab_button)
 
@@ -1140,6 +1143,146 @@ class TGC_QC_GUI_Plotly(QWidget):
         view = self._add_renderable_tab(render, tab_label)
         self.tabs.setCurrentWidget(view)
 
+
+    def convert_txt_to_root(self):
+        """Convert raw JATHub hex txt files to ROOT TTrees with full C++ validation."""
+        file_names, _ = QFileDialog.getOpenFileNames(
+            self, "Select raw JATHub txt files", "", "Text Files (*.txt);;All Files (*)"
+        )
+        if not file_names:
+            return
+
+        try:
+            import uproot
+            import awkward as ak
+        except ImportError as e:
+            QMessageBox.critical(self, "Missing Dependency",
+                                 f"uproot and awkward are required:\n  pip install uproot awkward\n\n{e}")
+            return
+
+        import collections
+        HEADER = 0xB0D00000
+        FOOTER_LO = 0xE0D0
+        EVLEN = 34
+        CHMAP = {(0, 0): (0, 0), (0, 1): (2, 0), (0, 2): (0, 1), (0, 3): (2, 1),
+                 (1, 0): (1, 0), (1, 2): (1, 1)}
+        EXPECTED_BLOCK = [(0, 1), (0, 0), (1, 1), (1, 0), (2, 1), (2, 0)]
+
+        results = []
+        for src in file_names:
+            dst = src[:-4] + ".root" if src.lower().endswith(".txt") else src + ".root"
+
+            words, bad_lines = [], 0
+            try:
+                with open(src) as f:
+                    for line in f:
+                        s = line.strip()
+                        if not s:
+                            continue
+                        try:
+                            if len(s) != 10:
+                                raise ValueError
+                            words.append(int(s, 16))
+                        except ValueError:
+                            bad_lines += 1
+            except Exception as e:
+                results.append(f"{os.path.basename(src)}: read error — {e}")
+                continue
+
+            qa = collections.Counter()
+            out = {k: [] for k in ("L1ID", "BCID", "JATHubID",
+                                   "HitBCTag", "HitLayer", "HitIsStrip", "HitChannel")}
+            starts = [i for i, w in enumerate(words) if w == HEADER]
+            qa["total_headers"] = len(starts)
+
+            for a, b in zip(starts, starts[1:] + [len(words)]):
+                ev = words[a:b]
+                if len(ev) != EVLEN or (ev[33] & 0xFFFF) != FOOTER_LO:
+                    qa["skip_bad_length_or_footer"] += 1
+                    continue
+                if (ev[33] >> 16) != 0x001e:
+                    qa["skip_bad_nsldata"] += 1
+                    continue
+                if (ev[2] >> 28) & 0xF:
+                    qa["skip_bad_w2_highbits"] += 1
+                    continue
+                if (ev[2] >> 12) & 0xF:
+                    qa["skip_bad_w2_midbits"] += 1
+                    continue
+                block_ok = True
+                bcids_rx1 = {}
+                for k in range(6):
+                    t = ev[3 + 5 * k]
+                    tga = t >> 24
+                    rx = (t >> 16) & 0xFF
+                    exp_tga, exp_rx = EXPECTED_BLOCK[k]
+                    if (t >> 12) & 0xF != 0xF:
+                        qa["skip_bad_datatag"] += 1
+                        block_ok = False
+                        break
+                    if tga != exp_tga or rx != exp_rx:
+                        qa["skip_wrong_block_order"] += 1
+                        block_ok = False
+                        break
+                    bcid = t & 0xFFF
+                    if exp_rx == 1:
+                        bcids_rx1[tga] = bcid
+                    else:
+                        if bcids_rx1.get(tga) is not None and bcids_rx1[tga] != bcid:
+                            qa["skip_bcid_mismatch"] += 1
+                            block_ok = False
+                            break
+                if not block_ok:
+                    continue
+
+                bt, ly, st, ch = [], [], [], []
+                for k in range(6):
+                    t = ev[3 + 5 * k]
+                    tga, rx = t >> 24, (t >> 16) & 0xFF
+                    for j in range(4):
+                        w = ev[4 + 5 * k + j]
+                        if not w:
+                            continue
+                        m = CHMAP.get((rx, j))
+                        for bit in range(32):
+                            if (w >> bit) & 1 and m is not None:
+                                bt.append(tga); ly.append(m[0])
+                                st.append(m[1]); ch.append(bit)
+
+                out["L1ID"].append(ev[1] & 0xFFFFFF)
+                out["BCID"].append((ev[2] >> 16) & 0xFFF)
+                out["JATHubID"].append(ev[2] & 0xFFF)
+                out["HitBCTag"].append(bt); out["HitLayer"].append(ly)
+                out["HitIsStrip"].append(st); out["HitChannel"].append(ch)
+                qa["ok"] += 1
+
+            if qa["ok"] == 0:
+                results.append(f"{os.path.basename(src)}: no valid events "
+                               f"(QA: {dict(qa)})")
+                continue
+
+            try:
+                data = {
+                    "L1ID":       np.array(out["L1ID"],      dtype=np.uint32),
+                    "BCID":       np.array(out["BCID"],      dtype=np.uint16),
+                    "JATHubID":   np.array(out["JATHubID"],  dtype=np.uint16),
+                    "HitBCTag":   ak.values_astype(ak.Array(out["HitBCTag"]),   np.uint16),
+                    "HitLayer":   ak.values_astype(ak.Array(out["HitLayer"]),   np.uint16),
+                    "HitIsStrip": ak.values_astype(ak.Array(out["HitIsStrip"]), np.uint16),
+                    "HitChannel": ak.values_astype(ak.Array(out["HitChannel"]), np.uint32),
+                }
+                with uproot.recreate(dst) as f:
+                    f["tree"] = data
+                skip_total = sum(v for k, v in qa.items() if k.startswith("skip_"))
+                results.append(
+                    f"{os.path.basename(src)}: {qa['ok']} events → {os.path.basename(dst)}"
+                    + (f" ({skip_total} skipped)" if skip_total else "")
+                )
+            except Exception as e:
+                results.append(f"{os.path.basename(src)}: write error — {e}")
+
+        QMessageBox.information(self, "Conversion complete",
+                                "\n".join(results) if results else "No files processed.")
 
     def _decode_hit_rate_files(self, file_names):
         """Decode raw hex threshold-scan files and return per-ASD hit rate data.
