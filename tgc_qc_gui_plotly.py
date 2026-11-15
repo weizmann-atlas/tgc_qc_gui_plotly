@@ -446,7 +446,7 @@ class TGC_QC_GUI_Plotly(QWidget):
         if mode in ("Threshold Scan", "Threshold by ASD", "Hit Rate Threshold Scan", "Hit Map"):
             self.load_button.setText("Load Threshold Files")
         elif mode == "Cosmic":
-            self.load_button.setText("Load Cosmic File")
+            self.load_button.setText("Load Cosmic File(s)")
         elif mode == "Noise":
             self.load_button.setText("Load Noise File")
         else:
@@ -581,10 +581,19 @@ class TGC_QC_GUI_Plotly(QWidget):
             return
 
         if mode == "Cosmic":
-            file_filter = "ROOT Files (*.root);;All Files (*)"
-        else:
-            file_filter = "Text Files (*.txt);;All Files (*)"
+            file_names, _ = QFileDialog.getOpenFileNames(
+                self, "Open Cosmic ROOT Files", "", "ROOT Files (*.root);;All Files (*)"
+            )
+            if not file_names:
+                return
+            self.label.setText(f"Loaded: {len(file_names)} file(s)")
+            try:
+                self.plot_cosmic_root(file_names)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to load file(s): {str(e)}")
+            return
 
+        file_filter = "Text Files (*.txt);;All Files (*)"
         file_name, _ = QFileDialog.getOpenFileName(self, "Open File", "", file_filter)
         if not file_name:
             return
@@ -596,8 +605,6 @@ class TGC_QC_GUI_Plotly(QWidget):
                 with open(file_name, 'r') as f:
                     lines = f.readlines()
                 self.plot_noise_file(lines)
-            elif mode == "Cosmic":
-                self.plot_cosmic_root(file_name)
             else:
                 html = "<h3>Mode not implemented yet.</h3>"
                 tab = QWebEngineView()
@@ -680,8 +687,8 @@ class TGC_QC_GUI_Plotly(QWidget):
                     if tag in self.pp_channel_mapping:
                         yield tag, values[offset:offset + 16]
 
-    def plot_cosmic_root(self, file_path):
-        """Plot cosmic ray occupancy from a ROOT file."""
+    def plot_cosmic_root(self, file_paths):
+        """Plot cosmic ray occupancy from one or more ROOT files (BCTag==1 only)."""
         try:
             import uproot
         except ImportError:
@@ -691,50 +698,70 @@ class TGC_QC_GUI_Plotly(QWidget):
             )
             return
 
-        try:
-            with uproot.open(file_path) as f:
-                tree = f['tree']
-                hit_layer = tree['HitLayer'].array(library='np')
-                hit_strip = tree['HitIsStrip'].array(library='np')
-                hit_channel = tree['HitChannel'].array(library='np')
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to read ROOT file: {str(e)}")
-            return
-
         occupancy_strip = np.zeros((3, 32))
         occupancy_wire = np.zeros((3, 32))
+        total_events = 0
 
-        for layers, strips, channels in zip(hit_layer, hit_strip, hit_channel):
-            for layer, is_strip, channel in zip(layers, strips, channels):
-                if channel < 0 or channel >= 32:
-                    continue
-                if is_strip:
-                    occupancy_strip[layer][channel] += 1
-                else:
-                    occupancy_wire[layer][channel] += 1
+        for file_path in file_paths:
+            try:
+                with uproot.open(file_path) as f:
+                    tree = f['tree']
+                    hit_layer   = tree['HitLayer'].array(library='np')
+                    hit_strip   = tree['HitIsStrip'].array(library='np')
+                    hit_channel = tree['HitChannel'].array(library='np')
+                    hit_bctag   = tree['HitBCTag'].array(library='np')
+            except Exception as e:
+                QMessageBox.critical(self, "Error",
+                    f"Failed to read {os.path.basename(file_path)}: {str(e)}")
+                return
 
-        def render(occ_strip=occupancy_strip.copy(), occ_wire=occupancy_wire.copy()):
+            total_events += len(hit_layer)
+            for layers, strips, channels, bctags in zip(hit_layer, hit_strip, hit_channel, hit_bctag):
+                for layer, is_strip, channel, bctag in zip(layers, strips, channels, bctags):
+                    if bctag != 1:
+                        continue
+                    if channel < 0 or channel >= 32:
+                        continue
+                    if is_strip:
+                        occupancy_strip[layer][channel] += 1
+                    else:
+                        occupancy_wire[layer][channel] += 1
+
+        if total_events > 0:
+            occ_strip_norm = occupancy_strip / total_events
+            occ_wire_norm  = occupancy_wire  / total_events
+        else:
+            occ_strip_norm, occ_wire_norm = occupancy_strip, occupancy_wire
+
+        n_files = len(file_paths)
+        file_summary = (f"{n_files} file(s), {total_events} events"
+                        if n_files > 1 else f"{total_events} events")
+
+        def render(occ_strip=occ_strip_norm.copy(), occ_wire=occ_wire_norm.copy(),
+                   summary=file_summary):
             use_log = self.log_scale_button.isChecked()
-            colorbar_title = "count"
+            colorbar_title = "hits/event"
             s, w = occ_strip.copy(), occ_wire.copy()
             if use_log:
                 for arr in (s, w):
                     pos = arr > 0
-                    min_pos = float(np.min(arr[pos])) if np.any(pos) else 1.0
+                    min_pos = float(np.min(arr[pos])) if np.any(pos) else 1e-6
                     arr[:] = np.log10(np.where(pos, arr, min_pos))
-                colorbar_title = "log10(count)"
+                colorbar_title = "log10(hits/event)"
             title_suffix = " (log z)" if use_log else ""
-            f = make_subplots(rows=1, cols=2,
-                              subplot_titles=("Strip Occupancy", "Wire Occupancy"))
-            f.add_trace(go.Heatmap(z=s, x=list(range(32)), y=["L0", "L1", "L2"],
-                                   colorscale='Viridis',
-                                   colorbar=dict(title=colorbar_title)), row=1, col=1)
-            f.add_trace(go.Heatmap(z=w, x=list(range(32)), y=["L0", "L1", "L2"],
-                                   colorscale='Viridis', showscale=False), row=1, col=2)
-            f.update_layout(title=f"Cosmic Occupancy Heatmap{title_suffix}", height=500)
-            return pio.to_html(f, full_html=True, include_plotlyjs='cdn')
+            fig = make_subplots(rows=1, cols=2,
+                                subplot_titles=("Strip Occupancy", "Wire Occupancy"))
+            fig.add_trace(go.Heatmap(z=s, x=list(range(32)), y=["L0", "L1", "L2"],
+                                     colorscale='Viridis',
+                                     colorbar=dict(title=colorbar_title)), row=1, col=1)
+            fig.add_trace(go.Heatmap(z=w, x=list(range(32)), y=["L0", "L1", "L2"],
+                                     colorscale='Viridis', showscale=False), row=1, col=2)
+            fig.update_layout(
+                title=f"Cosmic Occupancy (in-time, BCTag=1){title_suffix} — {summary}",
+                height=500)
+            return pio.to_html(fig, full_html=True, include_plotlyjs='cdn')
 
-        tab_label = f"Plot {self.tabs.count() + 1}"
+        tab_label = f"Cosmic ({total_events} ev)"
         view = self._add_renderable_tab(render, tab_label)
         self.tabs.setCurrentWidget(view)
 
