@@ -45,7 +45,7 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.label.setStyleSheet("font-size: 10px; color: gray;")
 
         self.mode_selector = QComboBox()
-        self.mode_selector.addItems(["Noise", "Cosmic", "Threshold Scan", "Threshold by ASD", "Hit Rate (TODO)"])
+        self.mode_selector.addItems(["Noise", "Cosmic", "Threshold Scan", "Threshold by ASD", "Hit Rate"])
 
         self.load_button = QPushButton("Load .txt File")
 
@@ -440,7 +440,7 @@ class TGC_QC_GUI_Plotly(QWidget):
     def update_load_button_label(self):
         """Update the load button text based on the selected mode."""
         mode = self.mode_selector.currentText()
-        if mode in ("Threshold Scan", "Threshold by ASD"):
+        if mode in ("Threshold Scan", "Threshold by ASD", "Hit Rate"):
             self.load_button.setText("Load Threshold Files")
         elif mode == "Cosmic":
             self.load_button.setText("Load Cosmic File")
@@ -560,7 +560,7 @@ class TGC_QC_GUI_Plotly(QWidget):
         """Load and process files based on the selected mode."""
         mode = self.mode_selector.currentText()
 
-        if mode in ("Threshold Scan", "Threshold by ASD"):
+        if mode in ("Threshold Scan", "Threshold by ASD", "Hit Rate"):
             file_names, _ = QFileDialog.getOpenFileNames(
                 self, "Open Threshold Files", "", "Text Files (*.txt);;All Files (*)"
             )
@@ -569,8 +569,10 @@ class TGC_QC_GUI_Plotly(QWidget):
             self.label.setText(f"Loaded: {len(file_names)} files")
             if mode == "Threshold Scan":
                 self.plot_threshold_scan(file_names)
-            else:
+            elif mode == "Threshold by ASD":
                 self.plot_threshold_scan_by_asd(file_names)
+            else:
+                self.plot_hit_rate(file_names)
             return
 
         if mode == "Cosmic":
@@ -1135,6 +1137,193 @@ class TGC_QC_GUI_Plotly(QWidget):
         tab_label = f"Plot {self.tabs.count() + 1}"
         view = self._add_renderable_tab(render, tab_label)
         self.tabs.setCurrentWidget(view)
+
+
+    def _decode_hit_rate_files(self, file_names):
+        """Decode raw hex threshold-scan files and return per-ASD hit rate data.
+
+        Only in-time hits (BCTag == 1 = current BC) are counted.
+        Returns: dict mapping tag → {'thresholds': [int, ...], 'hit_rates': [np.array(16), ...]}
+        """
+        HEADER = 0xB0D00000
+        FOOTER_LO = 0xE0D0
+        EVLEN = 34
+        # (rx, word_j) -> (layer, isStrip)
+        CHMAP = {(0, 0): (0, 0), (0, 1): (2, 0), (0, 2): (0, 1), (0, 3): (2, 1),
+                 (1, 0): (1, 0), (1, 2): (1, 1)}
+
+        # Build lookup: (layer, isStrip, raw_bit) -> (tag, local_ch 0-15)
+        ch_to_tag = {}
+        for tag, info in self.pp_channel_mapping.items():
+            if info['type'] == 'disconnected':
+                continue
+            layer = info['layer']
+            is_strip = 1 if info['type'] == 'strip' else 0
+            m = re.search(r'(\d+)\D+(\d+)', info.get('channels', ''))
+            if not m:
+                continue
+            ch_lo, ch_hi = int(m.group(1)), int(m.group(2))
+            for bit in range(ch_lo, min(ch_hi + 1, 32)):
+                ch_to_tag[(layer, is_strip, bit)] = (tag, bit - ch_lo)
+
+        active_tags = {
+            tag for tag in self.pp_channel_mapping
+            if self.pp_channel_mapping[tag]['type'] != 'disconnected'
+        }
+        per_tag = {tag: {} for tag in active_tags}
+
+        for file_path in file_names:
+            m = re.search(r'_(\d+)mV', file_path)
+            if not m:
+                continue
+            threshold = int(m.group(1))
+
+            words = []
+            try:
+                with open(file_path) as f:
+                    for line in f:
+                        s = line.strip()
+                        if s and len(s) == 10:
+                            try:
+                                words.append(int(s, 16))
+                            except ValueError:
+                                pass
+            except Exception:
+                continue
+
+            starts = [i for i, w in enumerate(words) if w == HEADER]
+            n_events = 0
+            hit_counts = {}  # (tag, local_ch) -> int
+
+            for a, b in zip(starts, starts[1:] + [len(words)]):
+                ev = words[a:b]
+                if len(ev) != EVLEN or (ev[33] & 0xFFFF) != FOOTER_LO:
+                    continue
+                if any(((ev[3 + 5 * k] >> 12) & 0xF) != 0xF for k in range(6)):
+                    continue
+                n_events += 1
+                for k in range(6):
+                    t_word = ev[3 + 5 * k]
+                    tga = t_word >> 24          # BCTag: 0=prev, 1=cur, 2=next
+                    if tga != 1:                # only in-time hits
+                        continue
+                    rx = (t_word >> 16) & 0xFF
+                    for j in range(4):
+                        w = ev[4 + 5 * k + j]
+                        if not w:
+                            continue
+                        entry = CHMAP.get((rx, j))
+                        if entry is None:
+                            continue
+                        layer, is_strip = entry
+                        for bit in range(32):
+                            if (w >> bit) & 1:
+                                tag_local = ch_to_tag.get((layer, is_strip, bit))
+                                if tag_local is None:
+                                    continue
+                                tag, local_ch = tag_local
+                                key = (tag, local_ch)
+                                hit_counts[key] = hit_counts.get(key, 0) + 1
+
+            if n_events == 0:
+                continue
+
+            for tag in active_tags:
+                ch_counts = np.zeros(16)
+                for local_ch in range(16):
+                    ch_counts[local_ch] = hit_counts.get((tag, local_ch), 0)
+                per_tag[tag][threshold] = (n_events, ch_counts)
+
+        result = {}
+        for tag, thr_data in per_tag.items():
+            if not thr_data:
+                continue
+            sorted_thrs = sorted(thr_data.keys())
+            thresholds = []
+            hit_rates = []
+            for thr in sorted_thrs:
+                n_ev, ch_counts = thr_data[thr]
+                thresholds.append(thr)
+                hit_rates.append(ch_counts / n_ev)
+            result[tag] = {'thresholds': thresholds, 'hit_rates': hit_rates}
+        return result
+
+    def plot_hit_rate(self, file_names):
+        """Plot in-time hit rate vs threshold per channel for each selected ASD card."""
+        selected_asd_cards = set(self.selected_asd_cards)
+        if not selected_asd_cards:
+            QMessageBox.warning(self, "Warning", "No ASD cards selected.")
+            return
+
+        try:
+            hit_data = self._decode_hit_rate_files(file_names)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to decode files: {str(e)}")
+            return
+
+        ordered_tags = self.sorted_asd_cards(
+            tag for tag in selected_asd_cards
+            if tag in hit_data
+            and self.pp_channel_mapping.get(tag, {}).get('type') != 'disconnected'
+        )
+        if not ordered_tags:
+            QMessageBox.warning(self, "Warning",
+                                "No valid hit data found.\n"
+                                "Make sure the files are raw hex threshold-scan dumps "
+                                "with threshold in the filename (e.g. _30mV).")
+            return
+
+        first_new_index = self.tabs.count()
+
+        for tag in ordered_tags:
+            d = hit_data[tag]
+            info0 = self.pp_channel_mapping.get(tag, {})
+            lbl0 = info0.get('label', '').strip()
+            tab_label = f"{lbl0} ({tag})" if lbl0 else tag
+
+            def render(d=d, tag=tag):
+                info = self.pp_channel_mapping.get(tag, {})
+                lbl = info.get('label', '').strip()
+                display_name = f"{lbl} ({tag})" if lbl else tag
+                subtitle = (
+                    f"Layer {info.get('layer', '?')}, "
+                    f"{info.get('type', '?')}, "
+                    f"ch {info.get('channels', '?')}"
+                )
+                thresholds = d['thresholds']
+                hit_rates = d['hit_rates']  # list of np.array(16)
+
+                if not thresholds:
+                    return f"<h3>No hit data for {display_name}</h3>"
+
+                all_rates = [r for arr in hit_rates for r in arr]
+                y_max = max(max(all_rates) * 1.1, 0.05) if all_rates else 1.05
+
+                fig = go.Figure()
+                for ch in range(16):
+                    rates = [float(hit_rates[i][ch]) for i in range(len(thresholds))]
+                    fig.add_trace(go.Scatter(
+                        x=thresholds, y=rates,
+                        mode='lines+markers',
+                        name=f"Ch {ch}",
+                        marker=dict(size=5),
+                        line=dict(width=1.5)
+                    ))
+
+                x_min, x_max = min(thresholds), max(thresholds)
+                x_pad = max((x_max - x_min) * 0.05, 5)
+                fig.update_layout(
+                    title=f"{display_name}<br><sup>{subtitle}</sup>",
+                    xaxis=dict(title="Threshold (mV)", range=[x_min - x_pad, x_max + x_pad]),
+                    yaxis=dict(title="Hit Rate (hits/event, in-time BC)", range=[0, y_max]),
+                    margin=dict(t=70, b=50),
+                    legend_title="Channel"
+                )
+                return pio.to_html(fig, full_html=True, include_plotlyjs='cdn')
+
+            self._add_renderable_tab(render, tab_label)
+
+        self.tabs.setCurrentIndex(first_new_index)
 
 
 if __name__ == "__main__":
