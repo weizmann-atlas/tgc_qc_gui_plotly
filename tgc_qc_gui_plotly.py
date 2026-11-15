@@ -45,7 +45,7 @@ class TGC_QC_GUI_Plotly(QWidget):
         self.label.setStyleSheet("font-size: 10px; color: gray;")
 
         self.mode_selector = QComboBox()
-        self.mode_selector.addItems(["Noise", "Cosmic", "Threshold Scan", "Threshold by ASD", "Hit Rate"])
+        self.mode_selector.addItems(["Noise", "Cosmic", "Threshold Scan", "Threshold by ASD", "Hit Rate Threshold Scan", "Hit Map"])
 
         self.load_button = QPushButton("Load .txt File")
 
@@ -440,7 +440,7 @@ class TGC_QC_GUI_Plotly(QWidget):
     def update_load_button_label(self):
         """Update the load button text based on the selected mode."""
         mode = self.mode_selector.currentText()
-        if mode in ("Threshold Scan", "Threshold by ASD", "Hit Rate"):
+        if mode in ("Threshold Scan", "Threshold by ASD", "Hit Rate Threshold Scan", "Hit Map"):
             self.load_button.setText("Load Threshold Files")
         elif mode == "Cosmic":
             self.load_button.setText("Load Cosmic File")
@@ -560,7 +560,7 @@ class TGC_QC_GUI_Plotly(QWidget):
         """Load and process files based on the selected mode."""
         mode = self.mode_selector.currentText()
 
-        if mode in ("Threshold Scan", "Threshold by ASD", "Hit Rate"):
+        if mode in ("Threshold Scan", "Threshold by ASD", "Hit Rate Threshold Scan", "Hit Map"):
             file_names, _ = QFileDialog.getOpenFileNames(
                 self, "Open Threshold Files", "", "Text Files (*.txt);;All Files (*)"
             )
@@ -571,8 +571,10 @@ class TGC_QC_GUI_Plotly(QWidget):
                 self.plot_threshold_scan(file_names)
             elif mode == "Threshold by ASD":
                 self.plot_threshold_scan_by_asd(file_names)
-            else:
+            elif mode == "Hit Rate Threshold Scan":
                 self.plot_hit_rate(file_names)
+            else:
+                self.plot_hit_map(file_names)
             return
 
         if mode == "Cosmic":
@@ -1322,6 +1324,77 @@ class TGC_QC_GUI_Plotly(QWidget):
                 return pio.to_html(fig, full_html=True, include_plotlyjs='cdn')
 
             self._add_renderable_tab(render, tab_label)
+
+        self.tabs.setCurrentIndex(first_new_index)
+
+    def plot_hit_map(self, file_names):
+        """Plot hit rate heatmap (channels × PP cards) for each threshold."""
+        selected = set(self.selected_asd_cards)
+        try:
+            hit_data = self._decode_hit_rate_files(file_names)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to decode files: {str(e)}")
+            return
+
+        ordered_tags = self.sorted_asd_cards(
+            tag for tag in selected
+            if tag in hit_data
+            and self.pp_channel_mapping.get(tag, {}).get('type') != 'disconnected'
+        )
+        if not ordered_tags:
+            QMessageBox.warning(self, "Warning",
+                                "No valid hit data found.\n"
+                                "Make sure the files are raw hex threshold-scan dumps "
+                                "with threshold in the filename (e.g. _30mV).")
+            return
+
+        all_thresholds = sorted({
+            thr for tag in ordered_tags for thr in hit_data[tag]['thresholds']
+        })
+        if not all_thresholds:
+            return
+
+        first_new_index = self.tabs.count()
+
+        for thr in all_thresholds:
+            matrix = np.full((16, len(ordered_tags)), np.nan)
+            for col, tag in enumerate(ordered_tags):
+                d = hit_data[tag]
+                if thr in d['thresholds']:
+                    idx = d['thresholds'].index(thr)
+                    matrix[:, col] = d['hit_rates'][idx]
+
+            def render(mat=matrix, tags=ordered_tags, threshold=thr):
+                use_log = self.log_scale_button.isChecked()
+                if use_log:
+                    pos = mat > 0
+                    if not np.any(pos):
+                        return f"<h3>Log scale: no positive hit rates at {threshold} mV.</h3>"
+                    min_pos = float(np.min(mat[pos]))
+                    z = np.log10(np.where(pos, mat, min_pos))
+                    z_title = "log10(hit rate)"
+                else:
+                    z = mat
+                    z_title = "hit rate (hits/event)"
+                suffix = " (log z)" if use_log else ""
+                x_labels = []
+                for t in tags:
+                    info = self.pp_channel_mapping.get(t, {})
+                    lbl = info.get('label', '').strip()
+                    x_labels.append(f"{lbl} ({t})" if lbl else t)
+                fig = go.Figure(data=go.Heatmap(
+                    z=z, x=x_labels, y=list(range(16)),
+                    colorscale='Viridis',
+                    colorbar=dict(title=z_title),
+                ))
+                fig.update_layout(
+                    title=f"Hit Map at {threshold} mV{suffix}",
+                    xaxis_title="PP Card", yaxis_title="Channel (0–15)",
+                    margin=dict(t=50, b=50)
+                )
+                return pio.to_html(fig, full_html=True, include_plotlyjs='cdn')
+
+            self._add_renderable_tab(render, f"Hit Map {thr}mV")
 
         self.tabs.setCurrentIndex(first_new_index)
 
